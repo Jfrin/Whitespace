@@ -56,10 +56,13 @@ def cmd_clean(args: argparse.Namespace, settings: Settings) -> int:
 
 
 def cmd_extract(args: argparse.Namespace, settings: Settings) -> int:
-    from whitespace.extract.llm import anthropic_call
+    from whitespace.extract.gazetteer import load_index
+    from whitespace.extract.nlp import RuleExtractor, build_nlp
     from whitespace.extract.run import extract_all
 
-    print(extract_all(Database(settings.db_path), anthropic_call(), limit=args.limit))
+    index = load_index(args.games, settings.data_dir / "apps.json")
+    extractor = RuleExtractor(build_nlp(index), index)
+    print(extract_all(Database(settings.db_path), extractor, limit=args.limit))
     return 0
 
 
@@ -78,7 +81,8 @@ def main(argv: list[str] | None = None) -> int:
     ing.add_argument("source")
     ing.set_defaults(fn=cmd_ingest)
     sub.add_parser("clean", help="flag dups / low-effort / language").set_defaults(fn=cmd_clean)
-    ext = sub.add_parser("extract", help="regex prefilter + LLM extraction")
+    ext = sub.add_parser("extract", help="regex prefilter + spaCy rule extraction (no LLM)")
+    ext.add_argument("--games", default="config/games.yaml")
     ext.add_argument("--limit", type=int, default=None)
     ext.set_defaults(fn=cmd_extract)
     sub.add_parser("stats", help="row counts").set_defaults(fn=cmd_stats)

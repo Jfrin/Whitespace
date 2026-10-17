@@ -1,0 +1,11 @@
+# Curated game list + aliases for the name gazetteer. Add more, or point
+# `data/apps.json` ({"appid": "name"}) at a bulk export from Steam/IGDB.
+games:
+  - {appid: 413150, name: Stardew Valley, aliases: [Stardew, SDV]}
+  - {appid: 1145360, name: Hades, aliases: []}
+  - {appid: 1145350, name: Hades II, aliases: []}
+  - {appid: 227300, name: Euro Truck Simulator 2, aliases: [ETS2]}
+  - {appid: 105600, name: Terraria, aliases: []}
+  - {appid: 892970, name: Valheim, aliases: []}
+  - {appid: 526870, name: Satisfactory, aliases: []}
+  - {appid: 427520, name: Factorio, aliases: []}

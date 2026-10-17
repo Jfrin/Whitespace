@@ -1,0 +1,259 @@
+"""spaCy-based extraction: dependency parse + marker rules, a game gazetteer, VADER intensity.
+
+Design note: the small English parser is noisy ("without" often comes back as a conjunction,
+"energy timer garbage" makes "garbage" the head). So rules anchor on markers (with / without /
+no) and clean phrases by dropping filler, instead of trusting exact dependency labels.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass
+
+from whitespace.extract import rules
+from whitespace.extract.appid import AppIndex
+from whitespace.extract.prefilter import find_trigger
+from whitespace.extract.schema import WantItem
+
+EXTRACTOR_VERSION = "rules-v0"
+MODEL = "en_core_web_sm"
+PEOPLE = {
+    "friend",
+    "partner",
+    "wife",
+    "husband",
+    "kid",
+    "family",
+    "people",
+    "girlfriend",
+    "boyfriend",
+    "son",
+    "daughter",
+    "brother",
+    "me",
+    "i",
+    "it",
+    "you",
+}
+
+
+def build_nlp(index: AppIndex | None = None):
+    """Load spaCy (parser only, no statistical NER) and add the game gazetteer."""
+    import spacy
+
+    nlp = spacy.load(MODEL, disable=["ner"])
+    ruler = nlp.add_pipe("entity_ruler", last=True, config={"phrase_matcher_attr": "LOWER"})
+    stop = nlp.Defaults.stop_words
+    patterns: list[dict] = []
+    for name, appid in index.patterns() if index else []:
+        if " " in name.strip():
+            patterns.append({"label": "GAME", "pattern": name, "id": str(appid)})  # case-insens.
+        elif name.lower() not in stop:
+            # single words ("Hades", "Control") match case-sensitively to limit false positives
+            patterns.append({"label": "GAME", "pattern": [{"ORTH": name}], "id": str(appid)})
+    ruler.add_patterns(patterns)
+    return nlp
+
+
+def build_sentiment() -> Callable[[str], float]:
+    from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+
+    analyzer = SentimentIntensityAnalyzer()
+    return lambda text: analyzer.polarity_scores(text)["compound"]
+
+
+@dataclass
+class _Feature:
+    relation: str  # "with" | "without"
+    phrase: str
+
+
+def _clean(tokens) -> str:
+    words = [
+        t.text.lower()
+        for t in tokens
+        if t.pos_ not in {"DET", "PUNCT", "PRON", "SPACE"}
+        and t.lower_ not in rules.FILLER
+        and not (t.pos_ == "ADP")
+    ]
+    return " ".join(words).replace("coop", "co-op").strip()
+
+
+def _phrase(tok) -> str:
+    """Head noun + its LEFT modifiers (compounds/adjectives). Lemmatize the head; if the head
+    itself is filler ("energy timer garbage"), keep only its modifiers."""
+    left = sorted(
+        (
+            t
+            for t in tok.subtree
+            if t.i < tok.i and t.dep_ in {"compound", "amod", "nmod", "nummod"}
+        ),
+        key=lambda t: t.i,
+    )
+    parts = [_clean([t]) for t in left]
+    if tok.lower_ not in rules.FILLER:
+        parts.append(tok.lemma_.lower() if tok.pos_ == "NOUN" else tok.text.lower())
+    return " ".join(p for p in parts if p).replace("coop", "co-op")
+
+
+def _is_people(tok) -> bool:
+    return tok.pos_ == "PRON" or tok.lemma_.lower() in PEOPLE
+
+
+def _marker_features(sent) -> tuple[list[_Feature], set[int]]:
+    """Find 'with X' / 'without X' / 'no X' phrases; return them plus the token ids they cover."""
+    feats: list[_Feature] = []
+    covered: set[int] = set()
+    for tok in sent:
+        low = tok.lower_
+        if low in {"with", "without"}:
+            obj = next((c for c in tok.children if c.dep_ == "pobj"), None)
+            if obj is None:  # parser attached it oddly: take the next noun within 4 tokens
+                obj = next(
+                    (t for t in sent[tok.i - sent.start + 1 :][:4] if t.pos_ in {"NOUN", "PROPN"}),
+                    None,
+                )
+            if obj is None or _is_people(obj):
+                continue
+            heads = [
+                obj,
+                *(c for c in obj.conjuncts if not any(k.lower_ == "no" for k in c.children)),
+            ]
+            for h in heads:
+                if h.pos_ in {"NOUN", "PROPN"} and not _is_people(h):
+                    phrase = _phrase(h)
+                    if phrase:
+                        feats.append(_Feature(low, phrase))
+                    covered.update(t.i for t in h.subtree)
+            covered.add(tok.i)
+        elif low == "no" and tok.dep_ == "det" and tok.head.pos_ == "NOUN":
+            phrase = _phrase(tok.head)
+            if phrase:
+                feats.append(_Feature("without", phrase))
+            covered.update(t.i for t in tok.head.subtree if t.i <= tok.head.i)
+    return feats, covered
+
+
+def _find_target(sent, after: int, skip: set[int], games: set[int]):
+    for tok in sent:
+        if tok.i < after or tok.i in skip or tok.i in games:
+            continue
+        if tok.dep_ in {"dobj", "attr", "pobj", "nsubjpass"} and tok.pos_ in {"NOUN", "PROPN"}:
+            if _is_people(tok) or tok.lemma_.lower() in rules.NON_DESIGN_TARGETS:
+                continue
+            if tok.head.lower_ == "like":  # that's the reference game, not the target
+                continue
+            return tok
+    return None
+
+
+class RuleExtractor:
+    """text -> list[WantItem], deterministic."""
+
+    def __init__(
+        self, nlp, index: AppIndex | None = None, sentiment: Callable[[str], float] | None = None
+    ) -> None:
+        self.nlp, self.index = nlp, index
+        self.sentiment = sentiment or build_sentiment()
+
+    def __call__(self, text: str) -> list[WantItem]:
+        doc = self.nlp(rules.normalize_text(text)[:4000])
+        out: list[WantItem] = []
+        seen: set[str] = set()
+        for sent in doc.sents:
+            for item in self._sentence(sent):
+                if item.want_summary not in seen:
+                    seen.add(item.want_summary)
+                    out.append(item)
+        return out
+
+    def _sentence(self, sent) -> list[WantItem]:
+        trig = find_trigger(sent.text)
+        if trig is None:
+            return []
+        trig_tok = next((t.i for t in sent if t.idx - sent.start_char >= trig), sent.start)
+        games = [e for e in sent.ents if e.label_ == "GAME"]
+        game_tokens = {t.i for e in games for t in e}
+        feats, covered = _marker_features(sent)
+        like_obj = next(
+            (
+                c
+                for t in sent
+                if t.lower_ == "like" and t.dep_ == "prep"
+                for c in t.children
+                if c.dep_ == "pobj"
+            ),
+            None,
+        )
+        if like_obj is not None:
+            game_tokens |= {t.i for t in like_obj.subtree if t.i <= like_obj.i}
+
+        target = _find_target(sent, trig_tok, covered, game_tokens)
+        bases = [
+            _phrase(t)
+            for t in ([target, *target.conjuncts] if target is not None else [])
+            if t.pos_ in {"NOUN", "PROPN"} and t.i not in covered and not _is_people(t)
+        ]
+        base = bases[0] if bases else ""
+        # lexicon features (e.g. "my partner can play too" -> co-op) the parser can't isolate
+        for name in rules.canonical_features(sent.text.replace("coop", "co-op")):
+            if not any(name in f.phrase for f in feats) and name != base:
+                feats.append(_Feature("with", name))
+        if base in rules.GENERIC_TARGETS and not feats and like_obj is None:
+            return []  # "I want to play this game" says nothing about a niche
+        if not base and not feats and like_obj is None:
+            return []
+
+        names = [e.text for e in games]
+        appids = sorted({int(e.ent_id_) for e in games if e.ent_id_})
+        if like_obj is not None and not games:
+            raw = " ".join(t.text for t in like_obj.subtree if t.i <= like_obj.i)
+            names.append(raw)
+            if self.index and (aid := self.index.resolve(raw)):
+                appids.append(aid)
+
+        is_like = like_obj is not None or bool(games and "like" in sent.text.lower())
+        subject_base = base or "game"
+        req = rules.classify_request(sent.text, base, is_like)
+        ref = f"like {', '.join(names)}" if is_like and names else base
+        stem = ref or base
+
+        intensity = rules.intensity_level(sent.text, self.sentiment(rules.neutralize(sent.text)))
+        quote = sent.text.strip()[:200]
+        conf = (
+            0.5
+            + (0.2 if target is not None else 0)
+            + (0.15 if feats else 0)
+            + (0.1 if names else 0)
+        )
+
+        items: list[WantItem] = []
+
+        def make(summary: str, subject: str) -> None:
+            items.append(
+                WantItem(
+                    request_type=req,
+                    subject=subject,
+                    want_summary=summary,
+                    intensity=intensity,
+                    quote=quote,
+                    confidence=min(conf, 0.9),
+                    referenced_games=list(names),
+                    referenced_appids=list(appids),
+                )
+            )
+
+        # a phrase can't be both wanted and unwanted: "without" wins
+        lacks = {f.phrase for f in feats if f.relation == "without"}
+        feats = [f for f in feats if not (f.relation == "with" and f.phrase in lacks)]
+        if feats:
+            for f in feats:
+                subj = rules.classify_subject(f.phrase) if f.phrase else "other"
+                make(f"{stem} {f.relation} {f.phrase}".strip(), subj)
+            for extra in bases[1:]:
+                make(extra, rules.classify_subject(extra))
+        else:
+            for b in bases or [stem]:
+                stem_i = f"like {', '.join(names)}" if is_like and names else b
+                make(stem_i, rules.classify_subject(b or subject_base, is_base=True))
+        return items

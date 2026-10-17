@@ -25,7 +25,7 @@ ingest:       ## make ingest SOURCE=steam_reviews
 clean-posts:
 	$(RUN) app clean
 
-extract:      ## needs ANTHROPIC_API_KEY in .env
+extract:      ## spaCy rule extraction, no API keys
 	$(RUN) app extract --limit 200
 
 dashboard:    ## http://localhost:8501

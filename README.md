@@ -20,7 +20,8 @@ make stats
 make dashboard              # http://localhost:8501
 ```
 
-`make extract` needs `ANTHROPIC_API_KEY` in `.env`. Data lands in `./data` (gitignored).
+No API keys are needed anywhere. Extraction is rule-based (spaCy), not an LLM. Data lands in
+`./data` (gitignored).
 
 ## Layout
 
@@ -29,7 +30,7 @@ make dashboard              # http://localhost:8501
 | `config/sources.yaml` | Source registry: enabled flag, rate limit, ToS URL, `tos_reviewed` date |
 | `ingest/` | `base.py` (rate limit, cursors, raw store, run ledger), `steam_reviews.py` (official API), `reddit.py` (official OAuth API), `forum.py` (Scrapling HTML) |
 | `clean/` | Language, low-effort, near-dup, review-bomb detection. Flags, never deletes |
-| `extract/` | Regex prefilter, LLM extraction with strict schema validation, name->appid resolver |
+| `extract/` | `prefilter.py` (regex candidates), `nlp.py` (spaCy rules), `rules.py` (pure-Python lexicons), `gazetteer.py` + `appid.py` (game names -> appids), `schema.py` (validation) |
 | `cluster/` | `embed.py` (UMAP + HDBSCAN, `ml` extra), `drift.py` (match clusters across runs) |
 | `score/gap.py` | Versioned gap formula with all weights in one dataclass |
 | `serve/app.py` | Streamlit dashboard |
@@ -49,6 +50,33 @@ pytest with a coverage gate (75%), then builds the prod and dashboard images and
 `pipeline.yml` is a manual run of ingest+clean; its schedule is commented out until you persist the
 SQLite file between runs (see the TODO in the file).
 
+## How extraction works (no LLM)
+
+`whitespace extract` turns a post into structured wants in four deterministic steps:
+
+1. **Prefilter** (`prefilter.py`): regex triggers ("I wish", "kill for", "games like", ...). Only
+   matching posts go further.
+2. **Dependency parse + markers** (`nlp.py`): spaCy finds the wanted noun ("farming sim"), then
+   `with X` / `without X` / `no X` phrases become feature tuples, with filler ("honestly",
+   "garbage") stripped. One item per tuple, so *"kill for a farming sim ... without the energy timer
+   garbage"* becomes `farming sim without energy timer` and `farming sim with co-op`. A small lexicon
+   catches things the parser misses (e.g. "my partner can play too" -> co-op).
+   This replaces OpenIE/CoreNLP, which needs Java. It's the same idea (subject/relation/object
+   tuples) built on the spaCy parse.
+3. **Gazetteer NER** (`EntityRuler`): game names from `config/games.yaml` (+ optional bulk
+   `data/apps.json`) are tagged and resolved to Steam appids. Multi-word names match any case;
+   single-word names ("Hades") match case-sensitively to avoid tagging ordinary words.
+4. **Intensity** (`rules.py`): strong phrases ("kill for", "desperately") or a strong VADER score ->
+   3; moderate verbs ("wish", "looking for") -> 2; neutral phrasing -> 1. The request wording itself
+   is stripped before scoring so "would be great if" doesn't count as emotion.
+
+Known limits (measure these on a gold set before trusting the output):
+- The small English parser is noisy; rules anchor on markers rather than exact dependency labels.
+- Wishes phrased as a relative clause with no marker ("a game where you run a bakery") are missed.
+- `confidence` is a heuristic score, not a probability.
+- Clustering still uses a small local embedding model (MiniLM), not an LLM. Swap in TF-IDF if you
+  want zero neural models.
+
 ## Adding a source
 
 1. Read its ToS and robots.txt; add an entry to `config/sources.yaml` and fill `tos_reviewed`.
@@ -63,13 +91,13 @@ Done and tested: ingest framework, Steam, Reddit, forum parser, cleaning, prefil
 (schema + retry), appid resolver, drift matching, gap formula, CLI, CI.
 
 Not built yet (next up):
-- [ ] `cluster` CLI command: wire `cluster_wants`, LLM naming of clusters, write `cluster`/`cluster_member`
+- [ ] `cluster` CLI command: wire `cluster_wants`, name clusters from c-TF-IDF keywords (BERTopic does this, no LLM), write `cluster`/`cluster_member`
 - [ ] `score` CLI command: build `catalog_game` (Steam/itch), match niches to games, write `niche_score`
 - [ ] Demand growth + distinct-community stats per cluster (inputs to `NicheDemand`)
 - [ ] Dissatisfaction rate from negative reviews of matched games
 - [ ] Dashboard: trend lines, representative quotes, closest existing games; weekly email report
 - [ ] Persist the SQLite file between scheduled CI runs
-- [ ] Gold-set evaluation for extraction precision/recall
+- [ ] Gold-set evaluation for extraction precision/recall (also the place to tune `rules.py` thresholds)
 - [ ] More sources (store reviews, itch.io, Kickstarter, YouTube) using the same crawler pattern
 
 ## Notes

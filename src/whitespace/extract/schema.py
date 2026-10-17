@@ -24,10 +24,11 @@ class WantItem:
     quote: str
     confidence: float
     referenced_games: list[str] = field(default_factory=list)
+    referenced_appids: list[int] = field(default_factory=list)
 
 
 def validate_item(d: dict) -> WantItem:
-    """Strict validation of one LLM-produced item. Raises ValueError on anything off-schema."""
+    """Strict validation of one extracted item. Raises ValueError on anything off-schema."""
     try:
         item = WantItem(
             request_type=str(d["request_type"]),
@@ -37,6 +38,7 @@ def validate_item(d: dict) -> WantItem:
             quote=str(d["quote"]).strip()[:300],
             confidence=float(d["confidence"]),
             referenced_games=[str(g) for g in d.get("referenced_games", [])],
+            referenced_appids=[int(a) for a in d.get("referenced_appids", [])],
         )
     except (KeyError, TypeError) as exc:
         raise ValueError(f"bad extraction item: {exc!r}") from exc

@@ -1,4 +1,4 @@
-"""Cheap regex first pass. Only candidates go to the (paid) LLM."""
+"""Cheap regex first pass. Only candidate posts go through the slower spaCy pass."""
 
 from __future__ import annotations
 
@@ -15,6 +15,9 @@ PATTERNS = [
     r"\bneeds? (a|an) [\w\- ]{0,25}(mode|option|system)\b",
     r"\bi('d| would) (love|kill) (for )?(a|an|to see)\b",
     r"\bwish (there was|someone would)\b",
+    r"\bi (really |just |actually )?(want|need) (a|an|some)\b",
+    r"\b(kill|die|dying) for\b",
+    r"\bis there (a|any|an) (game|games)\b",
 ]
 _COMPILED = [re.compile(p, re.I) for p in PATTERNS]
 
@@ -25,3 +28,9 @@ def match_patterns(text: str) -> list[str]:
 
 def is_candidate(text: str) -> bool:
     return any(p.search(text) for p in _COMPILED)
+
+
+def find_trigger(text: str) -> int | None:
+    """Character offset of the earliest trigger phrase, or None."""
+    hits = [m.start() for p in _COMPILED if (m := p.search(text))]
+    return min(hits) if hits else None

@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS post (
 CREATE TABLE IF NOT EXISTS want_item (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   post_id INTEGER NOT NULL REFERENCES post(id),
-  request_type TEXT, subject TEXT, want_summary TEXT, referenced_appids TEXT,
+  request_type TEXT, subject TEXT, want_summary TEXT, referenced_games TEXT, referenced_appids TEXT,
   intensity INTEGER, quote TEXT, confidence REAL, extractor_version TEXT,
   UNIQUE(post_id, want_summary)
 );

@@ -3,14 +3,15 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 
-from whitespace.extract.llm import EXTRACTOR_VERSION, extract_wants
+from whitespace.extract.nlp import EXTRACTOR_VERSION
 from whitespace.extract.prefilter import is_candidate
+from whitespace.extract.schema import WantItem
 from whitespace.storage import Database
 
+Extractor = Callable[[str], list[WantItem]]
 
-def extract_all(
-    db: Database, call: Callable[[str], str], limit: int | None = None
-) -> dict[str, int]:
+
+def extract_all(db: Database, extractor: Extractor, limit: int | None = None) -> dict[str, int]:
     rows = db.conn.execute(
         "SELECT p.* FROM post p LEFT JOIN want_item w ON w.post_id = p.id "
         "WHERE w.id IS NULL AND json_extract(p.flags,'$.is_dup') = 0 "
@@ -22,17 +23,18 @@ def extract_all(
         if not is_candidate(row["text"] or ""):
             continue
         stats["candidates"] += 1
-        for it in extract_wants(row["text"], call):
+        for it in extractor(row["text"]):
             db.conn.execute(
                 "INSERT OR IGNORE INTO want_item(post_id, request_type, subject, want_summary, "
-                "referenced_appids, intensity, quote, confidence, extractor_version) "
-                "VALUES (?,?,?,?,?,?,?,?,?)",
+                "referenced_games, referenced_appids, intensity, quote, confidence, "
+                "extractor_version) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (
                     row["id"],
                     it.request_type,
                     it.subject,
                     it.want_summary,
                     json.dumps(it.referenced_games),
+                    json.dumps(it.referenced_appids),
                     it.intensity,
                     it.quote,
                     it.confidence,

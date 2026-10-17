@@ -13,7 +13,7 @@ COPY --chown=app:app src ./src
 
 # ---- dev: editable install + test/lint tooling ------------------------------------------
 FROM base AS dev
-RUN pip install -e ".[dev,scrape,llm]"
+RUN pip install -e ".[dev,scrape,nlp]" && python -m spacy download en_core_web_sm
 COPY --chown=app:app tests ./tests
 COPY --chown=app:app config ./config
 USER app
@@ -23,9 +23,10 @@ CMD ["pytest"]
 # Build with --build-arg WITH_BROWSERS=1 for DynamicFetcher/StealthyFetcher sources
 # (downloads Playwright browsers, adds ~500MB+). Static HTML + APIs don't need it.
 FROM base AS prod
-ARG EXTRAS=scrape,llm
+ARG EXTRAS=scrape,nlp
 ARG WITH_BROWSERS=0
 RUN pip install ".[${EXTRAS}]" \
+    && if python -c 'import spacy' 2>/dev/null; then python -m spacy download en_core_web_sm; fi \
     && if [ "$WITH_BROWSERS" = "1" ]; then scrapling install && chmod -R a+rX /ms-playwright; fi
 COPY --chown=app:app config ./config
 USER app
