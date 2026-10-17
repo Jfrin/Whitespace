@@ -85,21 +85,6 @@ Known limits (measure these on a gold set before trusting the output):
    tests against it, so the parser is testable without the network.
 4. Wire it in `cli.py::cmd_ingest`.
 
-## Status: what's real vs. stubbed
-
-Done and tested: ingest framework, Steam, Reddit, forum parser, cleaning, prefilter, extraction
-(schema + retry), appid resolver, drift matching, gap formula, CLI, CI.
-
-Not built yet (next up):
-- [ ] `cluster` CLI command: wire `cluster_wants`, name clusters from c-TF-IDF keywords (BERTopic does this, no LLM), write `cluster`/`cluster_member`
-- [ ] `score` CLI command: build `catalog_game` (Steam/itch), match niches to games, write `niche_score`
-- [ ] Demand growth + distinct-community stats per cluster (inputs to `NicheDemand`)
-- [ ] Dissatisfaction rate from negative reviews of matched games
-- [ ] Dashboard: trend lines, representative quotes, closest existing games; weekly email report
-- [ ] Persist the SQLite file between scheduled CI runs
-- [ ] Gold-set evaluation for extraction precision/recall (also the place to tune `rules.py` thresholds)
-- [ ] More sources (store reviews, itch.io, Kickstarter, YouTube) using the same crawler pattern
-
 ## Notes
 
 - Use `StealthyFetcher` only where a site's ToS allows automated access. Never use it to bypass logins.
