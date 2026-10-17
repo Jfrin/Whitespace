@@ -1,0 +1,55 @@
+name: CI
+on:
+  push: {branches: [main]}
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build dev image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: dev
+          load: true
+          tags: whitespace-dev:ci
+          cache-from: type=gha,scope=dev
+          cache-to: type=gha,scope=dev,mode=max
+      - name: Ruff lint
+        run: docker run --rm whitespace-dev:ci ruff check .
+      - name: Ruff format check
+        run: docker run --rm whitespace-dev:ci ruff format --check .
+      - name: Tests + coverage gate
+        run: docker run --rm whitespace-dev:ci pytest
+
+  images:
+    needs: lint-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build prod image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: prod
+          load: true
+          tags: whitespace-prod:ci
+          cache-from: type=gha,scope=prod
+          cache-to: type=gha,scope=prod,mode=max
+      - name: Smoke test CLI
+        run: docker run --rm whitespace-prod:ci --help
+      - name: Build dashboard image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: dashboard
+          cache-from: type=gha,scope=dashboard
+          cache-to: type=gha,scope=dashboard,mode=max

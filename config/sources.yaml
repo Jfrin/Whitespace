@@ -1,0 +1,34 @@
+# Source registry: one entry per source. Review ToS + robots.txt BEFORE enabling.
+# method: api | scrapling
+sources:
+  steam_reviews:
+    enabled: true
+    method: api
+    min_interval_s: 1.5
+    tos_url: https://store.steampowered.com/subscriber_agreement/
+    tos_reviewed: null        # set to a date once you've read it
+    appids: [413150, 1145360] # example: Stardew Valley, Hades
+
+  reddit:
+    enabled: false            # needs REDDIT_CLIENT_ID/SECRET + current API terms review
+    method: api
+    min_interval_s: 1.0
+    tos_url: https://www.redditinc.com/policies/data-api-terms
+    tos_reviewed: null
+    subreddits: [patientgamers, CrazyIdeas]
+
+  example_forum:
+    enabled: false            # template for a Scrapling-based HTML source
+    method: scrapling
+    min_interval_s: 3.0
+    tos_url: https://forum.example.com/terms
+    tos_reviewed: null
+    start_urls: ["https://forum.example.com/forums/game-ideas.12/"]
+    selectors:
+      post: ".message"
+      post_id_attr: "data-id"
+      author: ".author::text"
+      body: ".message-body::text"
+      timestamp_attr: "time::attr(datetime)"
+
+  # Intentionally excluded: Discord and anything behind a login.

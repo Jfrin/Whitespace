@@ -1,0 +1,38 @@
+# Everything runs in Docker. All services are profiled, run them by name:
+#   docker compose run --rm test
+services:
+  test:
+    profiles: [dev]
+    build: {context: ., target: dev}
+    volumes: ["./src:/app/src", "./tests:/app/tests", "./config:/app/config"]
+    command: pytest
+
+  lint:
+    profiles: [dev]
+    build: {context: ., target: dev}
+    volumes: ["./src:/app/src", "./tests:/app/tests"]
+    command: sh -c "ruff check . && ruff format --check ."
+
+  fmt:
+    profiles: [dev]
+    build: {context: ., target: dev}
+    volumes: ["./src:/app/src", "./tests:/app/tests"]
+    command: sh -c "ruff check --fix . && ruff format ."
+
+  app:
+    profiles: [pipeline]
+    build: {context: ., target: prod}
+    env_file:
+      - path: .env
+        required: false
+    volumes: ["./data:/app/data", "./config:/app/config:ro"]
+
+  dashboard:
+    profiles: [dashboard]
+    build: {context: ., target: dashboard}
+    env_file:
+      - path: .env
+        required: false
+    environment: {WHITESPACE_DATA_DIR: /app/data}
+    volumes: ["./data:/app/data:ro"]
+    ports: ["8501:8501"]
