@@ -1,0 +1,11 @@
+# Genre context for posts that are NOT tied to one Steam game.
+# Keys: "reddit:<subreddit>" or a forum source name from sources.yaml.
+# Use the same vocabulary Steam uses in `genres` (Action, Adventure, Casual, Indie, RPG,
+# Simulation, Strategy, ...) so contexts from different sources line up.
+# An empty list means "general discussion, genre unknown".
+source_genres:
+  "reddit:patientgamers": []
+  "reddit:CrazyIdeas": []
+  "reddit:roguelikes": [Action, RPG]
+  "reddit:CozyGamers": [Casual, Simulation]
+  example_forum: [Strategy]

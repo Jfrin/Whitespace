@@ -220,3 +220,33 @@ NON_DESIGN_TARGETS = {
     "idea",
 }
 GENERIC_TARGETS = {"game", "games", "one", "thing", "things", "something", "anything", "it", ""}
+
+
+# --- scope: is the want about THIS game, a whole genre, or "like <other game>"? ---------
+THIS_GAME = re.compile(
+    r"\b(this|the) (game|title|port|version|update|dlc)\b|\bthe devs?\b|\bdevelopers?\b"
+    r"|\bplease add\b",
+    re.I,
+)
+GENRE_WIDE = re.compile(
+    r"\bwhy (doesn'?t|won'?t|hasn'?t|does no ?one) (anyone|anybody|someone)\b"
+    r"|\bis there (a|any|an) (game|games)\b|\blooking for (a |an |some )?(game|games)\b"
+    r"|\banyone make\b",
+    re.I,
+)
+
+
+def classify_scope(text: str, request_type: str, has_context_game: bool) -> str:
+    """game_specific | genre_wide | reference.
+
+    reference:     "games like Y but with X"
+    genre_wide:    "why doesn't anyone make X", "is there a game with X"
+    game_specific: a wish/complaint said about the game the post is attached to
+    """
+    if request_type == "games_like":
+        return "reference"
+    if GENRE_WIDE.search(text) or request_type == "genre_request":
+        return "genre_wide"
+    if THIS_GAME.search(text) or has_context_game:
+        return "game_specific"
+    return "genre_wide"

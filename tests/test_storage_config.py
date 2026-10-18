@@ -55,5 +55,34 @@ def test_old_database_gets_new_columns_on_open(tmp_path):
     old.close()
     db = Database(path)
     cols = {r["name"] for r in db.conn.execute("PRAGMA table_info(want_item)")}
-    assert "referenced_games" in cols
+    wanted = {"referenced_games", "context_appid", "context_genres", "scope", "source_context"}
+    assert wanted <= cols
     Database(path)  # opening again is a no-op, not an error
+
+
+def test_old_catalog_table_gets_genres_and_fetched_at(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old2.sqlite"
+    old = sqlite3.connect(path)
+    old.execute("CREATE TABLE catalog_game (appid INTEGER PRIMARY KEY, name TEXT, tags TEXT)")
+    old.commit()
+    old.close()
+    cols = {r["name"] for r in Database(path).conn.execute("PRAGMA table_info(catalog_game)")}
+    assert {"genres", "fetched_at"} <= cols
+
+
+def test_load_source_genres(tmp_path):
+    from whitespace.config import load_source_genres
+
+    f = tmp_path / "c.yaml"
+    f.write_text('source_genres:\n  "reddit:x": [RPG, Action]\n  empty: []\n  none:\n')
+    assert load_source_genres(f) == {"reddit:x": ["RPG", "Action"], "empty": [], "none": []}
+    assert load_source_genres(tmp_path / "missing.yaml") == {}
+
+
+def test_shipped_context_config_loads():
+    from whitespace.config import load_source_genres
+
+    cfg = load_source_genres("config/context.yaml")
+    assert cfg["reddit:roguelikes"] == ["Action", "RPG"] and cfg["reddit:CrazyIdeas"] == []

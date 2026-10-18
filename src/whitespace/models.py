@@ -31,3 +31,16 @@ class Post:
     @property
     def content_hash(self) -> str:
         return sha1(" ".join(self.text.lower().split()))
+
+
+@dataclass(frozen=True)
+class CatalogGame:
+    """One game's storefront facts. `genres` are coarse (Indie, RPG); `tags` here are Steam
+    store categories (Co-op, Multi-player), not user-voted tags."""
+
+    appid: int
+    name: str | None
+    genres: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
+    release_date: str | None = None
+    price: float | None = None

@@ -9,6 +9,13 @@ sources:
     tos_reviewed: null        # set to a date once you've read it
     appids: [413150, 1145360] # example: Stardew Valley, Hades
 
+  steam_catalog:               # not a content source: genres per game, used for context
+    enabled: true
+    method: api
+    min_interval_s: 1.6        # appdetails is throttled hard (HTTP 429), keep this conservative
+    tos_url: https://store.steampowered.com/subscriber_agreement/
+    tos_reviewed: null
+
   reddit:
     enabled: false            # needs REDDIT_CLIENT_ID/SECRET + current API terms review
     method: api

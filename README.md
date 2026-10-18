@@ -8,8 +8,9 @@ ideas. Everything runs in Docker. No LLM, no API keys.
 sources -> ingest -> raw store -> clean -> extract -> (context) -> cluster -> gap score -> dashboard
 ```
 
-Status: ingest, clean, and extract work end to end. Context, cluster, score, and the dashboard
-content are not built yet. See `PLAN.md` for the full checklist.
+Status: ingest, clean, and extract work end to end. Catalog + context (game, genre, scope per want)
+are written and waiting on your first run. Cluster, score, and the dashboard content are not built
+yet. See `PLAN.md` for the full checklist.
 
 ## Quick start (Docker)
 
@@ -22,6 +23,8 @@ docker compose --profile pipeline build app
 docker compose run --rm app ingest steam_reviews
 docker compose run --rm app clean
 docker compose run --rm app extract
+docker compose run --rm app catalog     # genres for every game wants refer to
+docker compose run --rm app context     # scope + game + genres on every want
 docker compose run --rm app stats
 ```
 
@@ -37,9 +40,9 @@ On Linux, the container runs as UID 1000. If it can't write `./data`: `sudo chow
 ## Test commands
 
 ```powershell
-docker compose run --rm test        # pytest + coverage gate (75%)
+docker compose run --rm fmt         # auto-fix lint + formatting (run this first)
 docker compose run --rm lint        # ruff check + format check
-docker compose run --rm fmt         # auto-fix lint + formatting
+docker compose run --rm test        # pytest + coverage gate (75%)
 ```
 
 Inspect what extraction produced:
@@ -50,6 +53,9 @@ docker compose run --rm --entrypoint python app -c "import sqlite3; c=sqlite3.co
 
 # counts by request type
 docker compose run --rm --entrypoint python app -c "import sqlite3; c=sqlite3.connect('/app/data/whitespace.sqlite'); [print(r) for r in c.execute('select request_type, count(*) from want_item group by 1 order by 2 desc')]"
+
+# wants with the game and genres they were said about
+docker compose run --rm --entrypoint python app -c "import sqlite3; c=sqlite3.connect('/app/data/whitespace.sqlite'); [print(r) for r in c.execute('select w.scope, c.name, w.context_genres, w.want_summary from want_item w left join catalog_game c on c.appid=w.context_appid order by random() limit 20')]"
 
 # each want next to its source quote (judge precision)
 docker compose run --rm --entrypoint python app -c "import sqlite3; c=sqlite3.connect('/app/data/whitespace.sqlite'); [print(r) for r in c.execute('select want_summary, substr(quote,1,120) from want_item order by random() limit 15')]"
@@ -62,9 +68,12 @@ docker compose run --rm --entrypoint python app -c "import sqlite3; c=sqlite3.co
 | `config/sources.yaml` | Source registry: enabled flag, rate limit, ToS URL, `tos_reviewed` date |
 | `config/games.yaml` | Curated games + aliases for the name gazetteer (optional bulk `data/apps.json`) |
 | `ingest/` | `base.py` (rate limit, cursors, raw store, run ledger), `steam_reviews.py` (official API), `reddit.py` (official OAuth API), `forum.py` (Scrapling HTML) |
+| `catalog.py` | Genres + store categories per appid from Steam's public `appdetails` endpoint (cached, rate limited) |
+| `context.py` | Attaches scope, context game, and genres to every extracted want |
+| `config/context.yaml` | Subreddit / forum -> genre map for posts not tied to one game |
 | `clean/` | Language, low-effort, near-duplicate, review-bomb detection. Flags, never deletes |
 | `extract/` | `prefilter.py` (regex candidates), `nlp.py` (spaCy rules), `rules.py` (pure-Python lexicons), `gazetteer.py` + `appid.py` (game names to appids), `schema.py` (validation) |
-| `cluster/` | `embed.py` (UMAP + HDBSCAN, `ml` extra), `drift.py` (match clusters across runs) |
+| `cluster/` | `embed.py` (UMAP + HDBSCAN, `ml` extra), `drift.py` (match clusters across runs), `text.py` (genre-prefixed text to embed) |
 | `score/gap.py` | Versioned gap formula, all weights in one dataclass |
 | `serve/app.py` | Streamlit dashboard |
 | `storage.py` | SQLite schema, raw store, automatic migrations for older databases |
@@ -115,21 +124,28 @@ The first real run showed the happy path works but the rules leak junk:
 `confidence` is a heuristic score, not a probability. Build a hand-labeled gold set before trusting
 the output; thresholds in `rules.py` should be tuned against it.
 
-## Next: tie every want to a game and genre
+## Context: every want knows what it was said about
 
-Today a want like "faster progression system" is stored without knowing what it was said about.
-The design (not built yet, tracked in `PLAN.md` section 5):
+A want like "faster progression system" is only meaningful with its game and genre, so
+`whitespace context` attaches four fields to each `want_item`:
 
-- **Context game** (the game being discussed) is kept separate from **referenced games** (games
-  mentioned for comparison). `post.game_appid` already exists; it needs to flow into `want_item`.
-- **Context genres** come from the catalog (Steam genres/tags) for the context game; for Reddit and
-  forums from a subreddit/board -> genre map in config; for "games like X" from X's tags.
-- **Scope** is classified by rules: `game_specific` ("this game should add X"), `genre_wide`
-  ("why doesn't anyone make X"), or `reference` ("games like Y but with X").
-- **Clustering** embeds `"<genres>: <want>"`, so "faster progression" in roguelikes and in 4X games
-  become different niches, and each niche reports what is wanted and where.
-- **Scoring** limits the supply join and the dissatisfaction rate to games that share the niche's
-  genre and tags.
+- **`context_appid`**: the game the post is about (a Steam review's own app). Kept separate from
+  `referenced_appids`, the games mentioned for comparison ("games like Hades").
+- **`context_genres`**: from the catalog (`whitespace catalog` fetches Steam genres per game). For
+  "games like Y" wants the referenced games' genres come first (they define the niche); otherwise the
+  context game's; otherwise the `config/context.yaml` map for that subreddit or forum.
+- **`scope`**: `game_specific` ("this game should add X"), `genre_wide` ("why doesn't anyone make X"),
+  or `reference` ("games like Y but with X"), from rules in `extract/rules.py`.
+- **`source_context`**: where the post lives, e.g. `reddit:roguelikes`.
+
+Order matters: run `extract`, then `catalog`, then `context`. Rows whose genres can't be resolved yet
+stay NULL and are retried on the next `context` run, so it is safe to re-run. Clustering text is
+built by `cluster/text.py` as `"action, rpg: faster progression system"`, so the same want in
+different genres lands in different niches.
+
+Known limits: Steam genres are coarse and "Indie" is on a huge share of games, so a stoplist of
+non-niche genres is still to do. Finer user tags would come from a third party and are not used.
+The catalog endpoint is throttled by Steam; a 429 stops the run and the next run resumes.
 
 ## Adding a source
 
@@ -137,7 +153,7 @@ The design (not built yet, tracked in `PLAN.md` section 5):
 2. Prefer an official API. Otherwise subclass `SourceCrawler` (see `forum.py` for the Scrapling pattern).
 3. Implement `fetch_since(cursor)` and a pure `parse(item)`. Save a small HTML/JSON fixture and write
    tests against it, so the parser is testable without the network.
-4. Wire it in `cli.py::cmd_ingest`, and add a subreddit/board -> genre entry for context.
+4. Wire it in `cli.py::cmd_ingest`, and add a subreddit/board -> genre entry in `config/context.yaml`.
 
 ## Notes
 

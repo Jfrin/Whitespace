@@ -59,3 +59,13 @@ def load_sources(path: str | Path = "config/sources.yaml") -> dict[str, SourceCo
             options={k: v for k, v in cfg.items() if k not in known},
         )
     return out
+
+
+def load_source_genres(path: str | Path = "config/context.yaml") -> dict[str, list[str]]:
+    """Genre context for sources not tied to one game: {"reddit:<sub>" | <forum name>: [genres]}."""
+    f = Path(path)
+    if not f.exists():
+        return {}
+    raw = yaml.safe_load(f.read_text()) or {}
+    mapping = raw.get("source_genres") or {}
+    return {str(k): [str(g) for g in (v or [])] for k, v in mapping.items()}

@@ -6,7 +6,7 @@ import sys
 
 import httpx
 
-from whitespace.config import Settings, load_sources
+from whitespace.config import Settings, load_source_genres, load_sources
 from whitespace.ingest.base import RateLimiter
 from whitespace.storage import Database, RawStore
 
@@ -66,10 +66,49 @@ def cmd_extract(args: argparse.Namespace, settings: Settings) -> int:
     return 0
 
 
+def cmd_catalog(args: argparse.Namespace, settings: Settings) -> int:
+    from whitespace.catalog import referenced_appids, refresh_catalog
+
+    cfg = load_sources(args.config).get("steam_catalog")
+    interval = cfg.min_interval_s if cfg else 1.6
+    db, raw = Database(settings.db_path), RawStore(settings.raw_dir)
+    appids = referenced_appids(db)
+    with _client(settings) as client:
+        stats = refresh_catalog(
+            db,
+            client,
+            RateLimiter(interval, jitter_s=0.3),
+            appids,
+            raw=raw,
+            max_age_days=args.max_age_days,
+            limit=args.limit,
+        )
+    print(f"{len(appids)} appids referenced; {stats}")
+    return 0
+
+
+def cmd_context(args: argparse.Namespace, settings: Settings) -> int:
+    from whitespace.context import enrich_context
+
+    db = Database(settings.db_path)
+    print(enrich_context(db, load_source_genres(args.context_config)))
+    return 0
+
+
 def cmd_stats(args: argparse.Namespace, settings: Settings) -> int:
     db = Database(settings.db_path)
-    for t in ("raw_fetch", "post", "want_item", "cluster", "niche_score"):
-        print(f"{t:12} {db.count(t)}")
+    for t in ("raw_fetch", "post", "want_item", "catalog_game", "cluster", "niche_score"):
+        print(f"{t:13} {db.count(t)}")
+    print("-- want_item context --")
+    for row in db.conn.execute(
+        "SELECT COALESCE(scope, '(not set)') AS s, COUNT(*) AS n FROM want_item "
+        "GROUP BY 1 ORDER BY 2 DESC"
+    ):
+        print(f"scope {row['s']:14} {row['n']}")
+    with_genres = db.conn.execute(
+        "SELECT COUNT(*) FROM want_item WHERE context_genres IS NOT NULL"
+    ).fetchone()[0]
+    print(f"with genres    {with_genres}")
     return 0
 
 
@@ -85,6 +124,13 @@ def main(argv: list[str] | None = None) -> int:
     ext.add_argument("--games", default="config/games.yaml")
     ext.add_argument("--limit", type=int, default=None)
     ext.set_defaults(fn=cmd_extract)
+    cat = sub.add_parser("catalog", help="fetch genres for every game wants refer to")
+    cat.add_argument("--max-age-days", type=int, default=30)
+    cat.add_argument("--limit", type=int, default=None, help="max games to fetch this run")
+    cat.set_defaults(fn=cmd_catalog)
+    ctx = sub.add_parser("context", help="attach game, genres, and scope to extracted wants")
+    ctx.add_argument("--context-config", default="config/context.yaml")
+    ctx.set_defaults(fn=cmd_context)
     sub.add_parser("stats", help="row counts").set_defaults(fn=cmd_stats)
     args = p.parse_args(argv)
     return args.fn(args, Settings.from_env())

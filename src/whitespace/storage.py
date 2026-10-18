@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from whitespace.models import Post
+from whitespace.models import CatalogGame, Post
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS raw_fetch (
@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS want_item (
   post_id INTEGER NOT NULL REFERENCES post(id),
   request_type TEXT, subject TEXT, want_summary TEXT, referenced_games TEXT, referenced_appids TEXT,
   intensity INTEGER, quote TEXT, confidence REAL, extractor_version TEXT,
+  context_appid INTEGER, context_genres TEXT, scope TEXT, source_context TEXT,
   UNIQUE(post_id, want_summary)
 );
 CREATE TABLE IF NOT EXISTS crawl_cursor (
@@ -49,8 +50,9 @@ CREATE TABLE IF NOT EXISTS cluster_member (
   prob REAL
 );
 CREATE TABLE IF NOT EXISTS catalog_game (
-  appid INTEGER PRIMARY KEY, name TEXT, tags TEXT, release_date TEXT, price REAL,
-  review_count INTEGER, review_score REAL, followers INTEGER, source TEXT
+  appid INTEGER PRIMARY KEY, name TEXT, genres TEXT, tags TEXT, release_date TEXT,
+  price REAL, review_count INTEGER, review_score REAL, followers INTEGER, source TEXT,
+  fetched_at TEXT
 );
 CREATE TABLE IF NOT EXISTS niche_score (
   cluster_id INTEGER REFERENCES cluster(id), run_id TEXT,
@@ -64,6 +66,12 @@ CREATE TABLE IF NOT EXISTS niche_score (
 # table, so databases created by older versions get these via ALTER TABLE on open.
 MIGRATIONS: list[tuple[str, str, str]] = [
     ("want_item", "referenced_games", "TEXT"),
+    ("want_item", "context_appid", "INTEGER"),
+    ("want_item", "context_genres", "TEXT"),
+    ("want_item", "scope", "TEXT"),
+    ("want_item", "source_context", "TEXT"),
+    ("catalog_game", "genres", "TEXT"),
+    ("catalog_game", "fetched_at", "TEXT"),
 ]
 
 
@@ -151,6 +159,43 @@ class Database:
             "UPDATE post SET flags=?, lang=? WHERE id=?", (json.dumps(flags), lang, post_id)
         )
         self.conn.commit()
+
+    # catalog ------------------------------------------------------------
+    def upsert_catalog(self, g: CatalogGame) -> None:
+        self.conn.execute(
+            "INSERT INTO catalog_game(appid, name, genres, tags, release_date, price, source, "
+            "fetched_at) VALUES (?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(appid) DO UPDATE SET name=excluded.name, genres=excluded.genres, "
+            "tags=excluded.tags, release_date=excluded.release_date, price=excluded.price, "
+            "source=excluded.source, fetched_at=excluded.fetched_at",
+            (
+                g.appid,
+                g.name,
+                json.dumps(g.genres),
+                json.dumps(g.tags),
+                g.release_date,
+                g.price,
+                "steam_appdetails",
+                now_iso(),
+            ),
+        )
+        self.conn.commit()
+
+    def catalog_is_fresh(self, appid: int, max_age_days: int) -> bool:
+        row = self.conn.execute(
+            "SELECT fetched_at FROM catalog_game WHERE appid=?", (appid,)
+        ).fetchone()
+        if not row or not row["fetched_at"]:
+            return False
+        age = datetime.now(UTC) - datetime.fromisoformat(row["fetched_at"])
+        return age < timedelta(days=max_age_days)
+
+    def catalog_genres(self, appid: int) -> list[str]:
+        """Genres for an appid; [] when unknown or the fetch found nothing."""
+        row = self.conn.execute(
+            "SELECT genres FROM catalog_game WHERE appid=?", (appid,)
+        ).fetchone()
+        return json.loads(row["genres"]) if row and row["genres"] else []
 
     def count(self, table: str) -> int:
         assert re.fullmatch(r"[a-z_]+", table)

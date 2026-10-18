@@ -50,3 +50,12 @@ def test_cli_stats_and_disabled_source(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("WHITESPACE_DATA_DIR", str(tmp_path))
     assert main(["stats"]) == 0 and "post" in capsys.readouterr().out
     assert main(["ingest", "reddit"]) == 2  # disabled in the shipped registry
+
+
+def test_cli_context_and_catalog_run_on_an_empty_db(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("WHITESPACE_DATA_DIR", str(tmp_path))
+    assert main(["context", "--context-config", "config/context.yaml"]) == 0
+    assert "unresolved" in capsys.readouterr().out
+    assert main(["catalog"]) == 0  # nothing referenced -> no network calls
+    assert "0 appids referenced" in capsys.readouterr().out
+    assert main(["stats"]) == 0 and "catalog_game" in capsys.readouterr().out

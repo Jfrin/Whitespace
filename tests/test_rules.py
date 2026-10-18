@@ -63,3 +63,19 @@ def test_canonical_features_and_normalization():
     assert rules.canonical_features("I want Co-Op and mod support") == ["co-op", "mod support"]
     assert rules.canonical_features("nothing relevant") == []
     assert rules.normalize_text("Co-Op  and co op\n") == "coop and coop"
+
+
+@pytest.mark.parametrize(
+    ("text", "request_type", "has_game", "expected"),
+    [
+        ("Looking for games like Hades but with co-op", "games_like", True, "reference"),
+        ("Why doesn't anyone make a cozy roguelike", "genre_request", False, "genre_wide"),
+        ("Is there a game with deep automation", "feature_wish", True, "genre_wide"),
+        ("I wish it had a photo mode", "feature_wish", True, "game_specific"),
+        ("the devs should add a photo mode", "feature_wish", False, "game_specific"),
+        ("I wish it had a photo mode", "feature_wish", False, "genre_wide"),
+        ("I expected a campaign, this is misleading", "unmet_expectation", True, "game_specific"),
+    ],
+)
+def test_classify_scope(text, request_type, has_game, expected):
+    assert rules.classify_scope(text, request_type, has_game) == expected
