@@ -120,3 +120,11 @@ def test_adjust_confidence():
     assert rules.adjust_confidence(0.8, "other", "games_like") == 0.8
     assert rules.adjust_confidence(0.95, "mechanic", "x") == 0.9
     assert rules.adjust_confidence(0.1, "other", "x") == 0.05
+
+
+def test_normalize_text_strips_steam_bbcode():
+    assert rules.normalize_text("[h1]I wish[/h1] it had [b]co-op[/b]") == "I wish it had coop"
+    assert rules.normalize_text("[url=https://x.io]link[/url] [*] item [spoiler]x[/spoiler]") == (
+        "link item x"
+    )
+    assert rules.normalize_text("a [sic] b") == "a b"

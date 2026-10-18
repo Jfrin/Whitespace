@@ -139,6 +139,12 @@ docker compose run --rm app gold-score --kind items
 docker compose run --rm app gold-score --kind missed
 ```
 
+A third sample, `--kind untriggered`, draws cleaned posts that match **no** trigger phrase. Label
+`contains_wish` y/n: if a real share say y, the prefilter is the bottleneck, and the labeled rows show
+which phrasings to add (e.g. "needs more", "should have", "lacks", "no way to"). The CSVs land in
+`.\data\` on your machine (the folder is mounted into the container). In Excel, save as
+**CSV UTF-8** so accents survive.
+
 `gold-score --kind items` reports precision overall, by request type / subject / scope, and above vs.
 below the 0.6 confidence threshold (so you can see whether the threshold is earning its keep).
 `--kind missed` reports how often a trigger post that produced nothing should have produced a want.

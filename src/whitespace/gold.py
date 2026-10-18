@@ -99,7 +99,8 @@ def write_csv(path: str | Path, fields: list[str], rows: list[dict]) -> None:
 
 
 def read_csv(path: str | Path) -> list[dict]:
-    with open(path, newline="", encoding="utf-8-sig") as f:
+    # errors="replace": Excel's plain "CSV" export is not UTF-8; accents may degrade, rows survive
+    with open(path, newline="", encoding="utf-8-sig", errors="replace") as f:
         return list(csv.DictReader(f))
 
 
@@ -149,3 +150,45 @@ def score_missed(rows: list[dict]) -> dict:
         "unlabeled": len(rows) - yes - no,
         "missed_rate": round(yes / (yes + no), 3) if yes + no else None,
     }
+
+
+UNTRIGGERED_FIELDS = ["post_id", "contains_wish", "source", "text_excerpt"]
+
+
+def sample_untriggered(db: Database, n: int, seed: int = 42) -> list[dict]:
+    """Cleaned posts that match NO trigger phrase. If a real share of these contain a wish, the
+    prefilter is the bottleneck (and the labeled ones show which patterns to add)."""
+    rows = db.conn.execute(
+        "SELECT p.id, p.source, p.text FROM post p LEFT JOIN want_item w ON w.post_id = p.id "
+        "WHERE w.id IS NULL AND json_extract(p.flags,'$.is_dup') = 0 "
+        "AND json_extract(p.flags,'$.is_low_effort') = 0 ORDER BY p.id"
+    ).fetchall()
+    others = [r for r in rows if not is_candidate(r["text"] or "")]
+    chosen = random.Random(seed).sample(others, min(n, len(others)))
+    return [
+        {
+            "post_id": r["id"],
+            "contains_wish": "",
+            "source": r["source"],
+            "text_excerpt": (r["text"] or "")[:400].replace("\n", " "),
+        }
+        for r in chosen
+    ]
+
+
+def score_untriggered(rows: list[dict]) -> dict:
+    labels = [parse_label(r.get("contains_wish")) for r in rows]
+    yes, no = labels.count(True), labels.count(False)
+    return {
+        "labeled": yes + no,
+        "unlabeled": len(rows) - yes - no,
+        "wish_rate": round(yes / (yes + no), 3) if yes + no else None,
+    }
+
+
+# kind -> (default file name, CSV fields, the column you fill in with y / n)
+KINDS = {
+    "items": ("gold_items.csv", ITEM_FIELDS, "correct"),
+    "missed": ("gold_missed.csv", MISSED_FIELDS, "should_extract"),
+    "untriggered": ("gold_untriggered.csv", UNTRIGGERED_FIELDS, "contains_wish"),
+}

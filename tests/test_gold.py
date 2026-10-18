@@ -89,3 +89,29 @@ def test_sample_missed_only_cleaned_trigger_posts_without_wants(db, add_want):
     rows = gold.sample_missed(db, 10)
     assert len(rows) == 1 and "farming game" in rows[0]["text_excerpt"]
     assert rows[0]["should_extract"] == "" and set(rows[0]) == set(gold.MISSED_FIELDS)
+
+
+def test_sample_untriggered_is_the_complement_of_missed(db):
+    db.upsert_post(Post("s", "t", "u", "I wish there was a farming game with automation", 1))
+    db.upsert_post(Post("s", "n1", "u", "Needs more content, the ending felt rushed and short", 2))
+    db.upsert_post(Post("s", "n2", "u", "Great game, played for 200 hours and loved it a lot", 3))
+    for r in db.conn.execute("SELECT id FROM post").fetchall():
+        db.set_flags(r["id"], "en", {"is_dup": False, "is_low_effort": False})
+    rows = gold.sample_untriggered(db, 10)
+    texts = " ".join(r["text_excerpt"] for r in rows)
+    assert len(rows) == 2 and "farming game" not in texts and "Needs more content" in texts
+    assert set(rows[0]) == set(gold.UNTRIGGERED_FIELDS)
+    assert len(gold.sample_missed(db, 10)) == 1  # the trigger post, which has no want
+
+
+def test_score_untriggered_and_kind_table():
+    rows = [{"contains_wish": v} for v in ("y", "n", "n", "")]
+    assert gold.score_untriggered(rows) == {"labeled": 3, "unlabeled": 1, "wish_rate": 0.333}
+    assert set(gold.KINDS) == {"items", "missed", "untriggered"}
+
+
+def test_read_csv_survives_a_non_utf8_file(tmp_path):
+    path = tmp_path / "excel.csv"
+    path.write_bytes("post_id,should_extract\n1,y\n2,caf\xe9\n".encode("latin-1"))
+    rows = gold.read_csv(path)
+    assert [r["post_id"] for r in rows] == ["1", "2"]

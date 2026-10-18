@@ -224,6 +224,11 @@ class RuleExtractor:
         is_like = like_obj is not None or bool(games and "like" in sent.text.lower())
         subject_base = base or "game"
         req = rules.classify_request(sent.text, base, is_like)
+        if req == "games_like" and not names:
+            # 'many games like this' names no game, so there is nothing to compare against
+            if not feats:
+                return []
+            req = "genre_request"
         ref = f"like {', '.join(names)}" if is_like and names else base
         stem = ref or base
 
@@ -264,5 +269,10 @@ class RuleExtractor:
         else:
             for b in bases or [stem]:
                 stem_i = f"like {', '.join(names)}" if is_like and names else b
-                make(stem_i, rules.classify_subject(b or subject_base, is_base=True))
+                subj = (
+                    "genre"
+                    if is_like and names
+                    else rules.classify_subject(b or subject_base, is_base=True)
+                )
+                make(stem_i, subj)
         return items

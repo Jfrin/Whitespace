@@ -99,17 +99,17 @@ def cmd_gold_export(args: argparse.Namespace, settings: Settings) -> int:
     from whitespace import gold
 
     db = Database(settings.db_path)
-    if args.kind == "items":
-        rows, fields = gold.sample_items(db, args.n, args.seed), gold.ITEM_FIELDS
-        default = settings.data_dir / "gold_items.csv"
-    else:
-        rows, fields = gold.sample_missed(db, args.n, args.seed), gold.MISSED_FIELDS
-        default = settings.data_dir / "gold_missed.csv"
-    out = args.out or default
+    filename, fields, label = gold.KINDS[args.kind]
+    sampler = {
+        "items": gold.sample_items,
+        "missed": gold.sample_missed,
+        "untriggered": gold.sample_untriggered,
+    }[args.kind]
+    rows = sampler(db, args.n, args.seed)
+    out = args.out or settings.data_dir / filename
     gold.write_csv(out, fields, rows)
-    label = "correct" if args.kind == "items" else "should_extract"
     print(f"wrote {len(rows)} rows to {out}")
-    print(f"fill the `{label}` column with y or n, then run gold-score")
+    print(f"fill the `{label}` column with y or n, then run gold-score --kind {args.kind}")
     return 0
 
 
@@ -118,10 +118,14 @@ def cmd_gold_score(args: argparse.Namespace, settings: Settings) -> int:
 
     from whitespace import gold
 
-    default = settings.data_dir / ("gold_items.csv" if args.kind == "items" else "gold_missed.csv")
-    rows = gold.read_csv(args.file or default)
-    result = gold.score_items(rows) if args.kind == "items" else gold.score_missed(rows)
-    print(json.dumps(result, indent=2))
+    filename = gold.KINDS[args.kind][0]
+    rows = gold.read_csv(args.file or settings.data_dir / filename)
+    scorer = {
+        "items": gold.score_items,
+        "missed": gold.score_missed,
+        "untriggered": gold.score_untriggered,
+    }[args.kind]
+    print(json.dumps(scorer(rows), indent=2))
     return 0
 
 
@@ -164,13 +168,13 @@ def main(argv: list[str] | None = None) -> int:
     ctx.add_argument("--refresh", action="store_true", help="recompute every row")
     ctx.set_defaults(fn=cmd_context)
     ge = sub.add_parser("gold-export", help="sample rows to label by hand (CSV)")
-    ge.add_argument("--kind", choices=["items", "missed"], default="items")
+    ge.add_argument("--kind", choices=["items", "missed", "untriggered"], default="items")
     ge.add_argument("--n", type=int, default=300)
     ge.add_argument("--seed", type=int, default=42)
     ge.add_argument("--out", default=None)
     ge.set_defaults(fn=cmd_gold_export)
     gs = sub.add_parser("gold-score", help="precision / miss rate from a labeled CSV")
-    gs.add_argument("--kind", choices=["items", "missed"], default="items")
+    gs.add_argument("--kind", choices=["items", "missed", "untriggered"], default="items")
     gs.add_argument("--file", default=None)
     gs.set_defaults(fn=cmd_gold_score)
     sub.add_parser("stats", help="row counts").set_defaults(fn=cmd_stats)

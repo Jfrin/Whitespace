@@ -132,3 +132,18 @@ def test_junk_nouns_do_not_become_features(extract):
 def test_items_without_a_design_subject_get_lower_confidence(extract):
     items = extract("I wish it had a unicorn.")
     assert items and all(i.subject == "other" and i.confidence < 0.6 for i in items)
+
+
+def test_comparison_without_a_named_game_is_dropped(extract):
+    assert extract("There are so many games like this.") == []
+
+
+def test_comparison_without_a_game_but_with_a_feature_becomes_a_genre_request(extract):
+    items = extract("Looking for games like this but with co-op.")
+    assert all(i.request_type != "games_like" for i in items)
+    assert any("co-op" in i.want_summary for i in items)
+
+
+def test_steam_markup_does_not_leak_into_wants(extract):
+    items = extract("[h1]Why doesn't anyone make a roguelite?[/h1]")
+    assert not any("[" in i.want_summary or "h1" in i.want_summary for i in items)

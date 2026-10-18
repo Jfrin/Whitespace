@@ -191,8 +191,13 @@ def canonical_features(text: str) -> list[str]:
     return seen
 
 
+# Steam review markup: [h1], [/b], [url=...], [spoiler], [*] ...
+BBCODE = re.compile(r"\[/?[a-z0-9*]+(?:=[^\]]*)?\]", re.I)
+
+
 def normalize_text(text: str) -> str:
     """Pre-parse cleanup: stops the tokenizer splitting 'co-op' into three tokens."""
+    text = BBCODE.sub(" ", text)
     text = re.sub(r"\bco[- ]?op\b", "coop", text, flags=re.I)
     return re.sub(r"\s+", " ", text).strip()
 

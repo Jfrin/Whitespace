@@ -72,3 +72,12 @@ def test_cli_gold_and_flags_on_an_empty_db(monkeypatch, tmp_path, capsys):
     assert '"labeled": 0' in capsys.readouterr().out
     assert main(["gold-score", "--kind", "missed"]) == 0
     assert main(["context", "--refresh", "--context-config", "config/context.yaml"]) == 0
+
+
+def test_cli_gold_untriggered_kind(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("WHITESPACE_DATA_DIR", str(tmp_path))
+    assert main(["gold-export", "--kind", "untriggered"]) == 0
+    assert (tmp_path / "gold_untriggered.csv").exists()
+    capsys.readouterr()
+    assert main(["gold-score", "--kind", "untriggered"]) == 0
+    assert '"wish_rate": null' in capsys.readouterr().out
