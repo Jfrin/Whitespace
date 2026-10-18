@@ -150,6 +150,13 @@ _SUBJECT_LEXICON.extend(
         ),
     ]
 )
+_SUBJECT_LEXICON.extend(
+    [
+        ("mechanic", re.compile(r"checkpoint|auto.?save|restart|respawn", re.I)),
+        ("content", re.compile(r"replayab|variety", re.I)),
+        ("ux", re.compile(r"rebind|remap|instruction|\bguide\b|walkthrough|\bwiki\b", re.I)),
+    ]
+)
 GENRE = re.compile(
     r"\b(sim|simulator|simulation|rpg|roguelike|roguelite|platformer|shooter|strategy|puzzle"
     r"|survival|tycoon|metroidvania|souls.?like|4x|rts|jrpg|visual novel|deckbuilder|game)\b",
@@ -197,6 +204,7 @@ BBCODE = re.compile(r"\[/?[a-z0-9*]+(?:=[^\]]*)?\]", re.I)
 
 def normalize_text(text: str) -> str:
     """Pre-parse cleanup: stops the tokenizer splitting 'co-op' into three tokens."""
+    text = text.replace("\u2019", "'").replace("\u2018", "'")
     text = BBCODE.sub(" ", text)
     text = re.sub(r"\bco[- ]?op\b", "coop", text, flags=re.I)
     return re.sub(r"\s+", " ", text).strip()
@@ -276,6 +284,24 @@ NON_DESIGN_TARGETS = {
     "feeling",
     "opinion",
     "thought",
+    "steam",
+    "sequel",
+    "series",
+    "genre",
+    "masterpiece",
+    "gut",
+    "ground",
+    "pc",
+    "computer",
+    "hardware",
+    "price",
+    "sale",
+    "discount",
+    "star",
+    "stars",
+    "icon",
+    "thumb",
+    "recommendation",
 }
 GENERIC_TARGETS = {"game", "games", "one", "thing", "things", "something", "anything", "it", ""}
 
@@ -336,3 +362,29 @@ def adjust_confidence(conf: float, subject: str, request_type: str) -> float:
     if subject == "other" and request_type != "games_like":
         conf -= 0.25
     return round(min(max(conf, 0.05), 0.9), 2)
+
+
+# --- language, polarity, clause helpers (pure, so they test without spaCy) -------------------
+ENGLISH = {"en", "english", "eng"}
+
+
+def is_english(lang: str | None) -> bool:
+    """Unknown language counts as English (nothing to go on); 'und' and other languages don't."""
+    return not lang or lang.strip().lower() in ENGLISH
+
+
+NEGATED_WISH = re.compile(
+    r"\bwish\b[^.!?]{0,40}?\b(wasn'?t|weren'?t|isn'?t|didn'?t|hadn'?t|wouldn'?t|did not|was not"
+    r"|were not|had no)\b",
+    re.I,
+)
+
+
+def is_negated_wish(text: str) -> bool:
+    """'I wish this wasn't a roguelite': the thing named is what they do NOT want."""
+    return bool(NEGATED_WISH.search(text))
+
+
+QUANTITY_NOUNS = {"kind", "sort", "type", "bit", "lot", "couple", "piece", "variety"}
+LESS_WORDS = {"less", "fewer", "lesser"}
+CLAUSE_BREAKS = {"but", "however", "although", "though", "whereas"}

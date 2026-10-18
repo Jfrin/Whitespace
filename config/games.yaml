@@ -25,3 +25,7 @@ games:
   - {appid: 262060, name: Darkest Dungeon, aliases: []}
   - {appid: 1868140, name: Dave the Diver, aliases: []}
   - {appid: 1313140, name: Cult of the Lamb, aliases: []}
+  # Added from the first gold review (games named in "games like ..." comparisons).
+  - {appid: 588650, name: Dead Cells, aliases: []}
+  - {appid: 445980, name: Wizard of Legend, aliases: []}
+  - {appid: 730, name: Counter-Strike 2, aliases: [CS2]}

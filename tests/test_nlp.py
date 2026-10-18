@@ -147,3 +147,35 @@ def test_comparison_without_a_game_but_with_a_feature_becomes_a_genre_request(ex
 def test_steam_markup_does_not_leak_into_wants(extract):
     items = extract("[h1]Why doesn't anyone make a roguelite?[/h1]")
     assert not any("[" in i.want_summary or "h1" in i.want_summary for i in items)
+
+
+def test_negated_wish_becomes_a_complaint_about_the_thing(extract):
+    items = extract("I wish this wasn't a roguelite.")
+    got = {(i.request_type, i.want_summary) for i in items}
+    assert ("complaint", "without roguelite") in got
+
+
+def test_some_kind_of_x_resolves_to_x(extract):
+    items = extract("i wish there was some kind of checkpoint between the big chunks of the game")
+    assert any("checkpoint" in i.want_summary for i in items)
+    assert not any(i.want_summary.strip() == "" for i in items)
+
+
+def test_less_keeps_its_polarity(extract):
+    items = extract("It needs a faster progression system and less confusing mechanics.")
+    assert "less confusing mechanic" in {i.want_summary for i in items}
+
+
+def test_a_later_clause_cannot_hijack_the_target(extract):
+    items = extract(
+        "So I wish I could recommend it purely for that, but for what it is, a rogue-lite, "
+        "it needs more replayability."
+    )
+    assert not any("rogue" in i.want_summary for i in items)
+
+
+def test_every_game_in_a_comparison_list_is_captured(extract):
+    text = "Devs could learn a thing or two from games like Binding of Isaac or Dead Cells."
+    items = extract(text)
+    names = " ".join(g for i in items for g in i.referenced_games)
+    assert "Dead Cells" in names

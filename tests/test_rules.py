@@ -128,3 +128,61 @@ def test_normalize_text_strips_steam_bbcode():
         "link item x"
     )
     assert rules.normalize_text("a [sic] b") == "a b"
+
+
+@pytest.mark.parametrize(
+    ("lang", "expected"),
+    [
+        (None, True),
+        ("", True),
+        ("en", True),
+        ("english", True),
+        ("English", True),
+        ("russian", False),
+        ("und", False),
+        ("schinese", False),
+    ],
+)
+def test_is_english(lang, expected):
+    assert rules.is_english(lang) is expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("I wish this wasn't a roguelite.", True),
+        ("I wish it didn't have energy timers", True),
+        ("i wish i hadn't bought it", True),
+        ("I wish it had co-op", False),
+        ("I wish I could recommend it", False),
+        ("Why isn't there co-op, I wish", False),  # negation before the wish
+    ],
+)
+def test_is_negated_wish(text, expected):
+    assert rules.is_negated_wish(text) is expected
+
+
+def test_normalize_text_straightens_curly_apostrophes():
+    assert rules.normalize_text("I wish it wasn\u2019t this way") == "I wish it wasn't this way"
+
+
+@pytest.mark.parametrize(
+    ("phrase", "expected"),
+    [
+        ("checkpoint", "mechanic"),
+        ("fast restarts", "mechanic"),
+        ("replayability", "content"),
+        ("button rebinding", "ux"),
+        ("instructions", "ux"),
+        ("hard mode", "difficulty"),
+    ],
+)
+def test_subject_vocabulary_from_the_gold_review(phrase, expected):
+    assert rules.classify_subject(phrase) == expected
+
+
+def test_off_topic_targets_are_junk():
+    for word in ("steam", "sequel", "series", "genre", "masterpiece", "gut", "pc", "rating"):
+        assert rules.is_junk_target(word), word
+    for word in ("checkpoint", "progression", "mode", "story"):
+        assert not rules.is_junk_target(word), word

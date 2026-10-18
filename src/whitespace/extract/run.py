@@ -5,6 +5,7 @@ from collections.abc import Callable
 
 from whitespace.extract.nlp import EXTRACTOR_VERSION
 from whitespace.extract.prefilter import is_candidate
+from whitespace.extract.rules import is_english
 from whitespace.extract.schema import WantItem
 from whitespace.storage import Database
 
@@ -23,9 +24,12 @@ def extract_all(
         "WHERE w.id IS NULL AND json_extract(p.flags,'$.is_dup') = 0 "
         "AND json_extract(p.flags,'$.is_low_effort') = 0"
     ).fetchall()
-    stats = {"scanned": 0, "candidates": 0, "items": 0}
+    stats = {"scanned": 0, "candidates": 0, "items": 0, "non_english": 0}
     for row in rows:
         stats["scanned"] += 1
+        if not is_english(row["lang"]):
+            stats["non_english"] += 1  # the rules are English-only; see PLAN.md
+            continue
         if not is_candidate(row["text"] or ""):
             continue
         stats["candidates"] += 1

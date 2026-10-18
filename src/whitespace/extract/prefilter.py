@@ -22,15 +22,23 @@ PATTERNS = [
 _COMPILED = [re.compile(p, re.I) for p in PATTERNS]
 
 
+def _n(text: str) -> str:
+    """Curly apostrophes -> straight, so "doesn’t" matches the same patterns as "doesn't"."""
+    return text.replace("\u2019", "'").replace("\u2018", "'")
+
+
 def match_patterns(text: str) -> list[str]:
+    text = _n(text)
     return [p.pattern for p in _COMPILED if p.search(text)]
 
 
 def is_candidate(text: str) -> bool:
+    text = _n(text)
     return any(p.search(text) for p in _COMPILED)
 
 
 def find_trigger(text: str) -> int | None:
     """Character offset of the earliest trigger phrase, or None."""
+    text = _n(text)
     hits = [m.start() for p in _COMPILED if (m := p.search(text))]
     return min(hits) if hits else None

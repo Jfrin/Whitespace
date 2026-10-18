@@ -123,6 +123,11 @@ The first real run showed the happy path works but leaked junk ("like this", "ho
 - **confidence penalty**: items with no design subject lose 0.25 confidence. Rows are kept; consumers
   filter (`cluster/text.py` keeps `confidence >= 0.6`)
 
+Extraction is **English-only**: posts whose language tag isn't English are skipped and counted as
+`non_english` in the `extract` output (about a third of the first Steam sample). `complaint` items
+("I wish this wasn't a roguelite") are emitted for negated wishes only; a general complaint channel
+("no X", "can't X") is a pending decision in `PLAN.md`.
+
 `confidence` is a heuristic score, not a probability. Remaining known gaps: wishes written as a
 relative clause with no marker ("a game where you run a bakery") are missed, and lowercase or
 abbreviated game names resolve less reliably than exact ones.

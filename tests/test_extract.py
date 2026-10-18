@@ -84,7 +84,7 @@ def test_extract_all_only_runs_candidates_and_stores_appids(db):
         ]
 
     stats = extract_all(db, fake)
-    assert stats == {"scanned": 2, "candidates": 1, "items": 1} and len(seen) == 1
+    assert stats == {"scanned": 2, "candidates": 1, "items": 1, "non_english": 0} and len(seen) == 1
     row = db.conn.execute("SELECT * FROM want_item").fetchone()
     assert json.loads(row["referenced_appids"]) == [1145360]
     assert json.loads(row["referenced_games"]) == ["Hades"]
@@ -137,3 +137,26 @@ def test_extract_all_redo_replaces_existing_wants(db):
     extract_all(db, new_rules, redo=True)
     rows = [r["want_summary"] for r in db.conn.execute("SELECT want_summary FROM want_item")]
     assert rows == ["new summary"]
+
+
+def test_extract_all_skips_non_english_posts(db):
+    text = "I wish there was a co-op farming game with automation"
+    db.upsert_post(Post("s", "1", "u", text, 1))
+    db.upsert_post(Post("s", "2", "u", text + " too", 2))
+    _flag_all(db)
+    db.conn.execute("UPDATE post SET lang='russian' WHERE source_id='2'")
+    db.conn.commit()
+    seen = []
+    stats = extract_all(db, lambda t: (seen.append(t), [])[1])
+    assert stats["non_english"] == 1 and stats["candidates"] == 1 and len(seen) == 1
+
+
+def test_prefilter_handles_curly_apostrophes():
+    assert is_candidate("Why doesn\u2019t anyone make a cozy sim?")
+    assert find_trigger("it\u2019s fine. why doesn\u2019t anyone make a sim") == 11
+
+
+def test_games_from_the_first_gold_review_resolve():
+    idx = load_index("config/games.yaml")
+    assert idx.resolve("dead cells") == 588650 and idx.resolve("CS2") == 730
+    assert idx.resolve("Wizard of Legend") == 445980

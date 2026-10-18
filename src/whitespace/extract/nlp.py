@@ -136,8 +136,10 @@ def _marker_features(sent) -> tuple[list[_Feature], set[int]]:
     return feats, covered
 
 
-def _find_target(sent, after: int, skip: set[int], games: set[int]):
+def _find_target(sent, after: int, skip: set[int], games: set[int], before: int | None = None):
     for tok in sent:
+        if before is not None and tok.i >= before:
+            break
         if tok.i < after or tok.i in skip or tok.i in games:
             continue
         if tok.dep_ in {"dobj", "attr", "pobj", "nsubjpass"} and tok.pos_ in {"NOUN", "PROPN"}:
@@ -147,6 +149,34 @@ def _find_target(sent, after: int, skip: set[int], games: set[int]):
                 continue
             return tok
     return None
+
+
+def _descend(tok):
+    """'some kind of checkpoint' -> checkpoint: skip a quantity noun to the thing it describes."""
+    if tok.lemma_.lower() in rules.QUANTITY_NOUNS:
+        for c in tok.children:
+            if c.dep_ == "prep" and c.lower_ == "of":
+                for p in c.children:
+                    if p.dep_ == "pobj" and p.pos_ in {"NOUN", "PROPN"}:
+                        return p
+    return tok
+
+
+def _with_less(sent, tok) -> str:
+    """'less confusing mechanics' keeps its 'less': the want is the opposite of the phrase."""
+    phrase = _phrase(tok)
+    lo = max(sent.start, tok.i - 4)
+    if any(t.lower_ in rules.LESS_WORDS for t in sent.doc[lo : tok.i]):
+        return f"less {phrase}"
+    return phrase
+
+
+def _clause_end(sent, after: int) -> int:
+    """Where the wanted thing's clause ends (', but ...'), so a later clause can't hijack it."""
+    return next(
+        (t.i for t in sent if t.i > after and (t.lower_ in rules.CLAUSE_BREAKS or t.text == ";")),
+        sent.end,
+    )
 
 
 class RuleExtractor:
@@ -194,9 +224,11 @@ class RuleExtractor:
         if like_obj is not None:
             game_tokens |= {t.i for t in like_obj.subtree if t.i <= like_obj.i}
 
-        target = _find_target(sent, trig_tok, covered, game_tokens)
+        target = _find_target(sent, trig_tok, covered, game_tokens, _clause_end(sent, trig_tok))
+        if target is not None:
+            target = _descend(target)
         bases = [
-            _phrase(t)
+            _with_less(sent, t)
             for t in ([target, *target.conjuncts] if target is not None else [])
             if t.pos_ in {"NOUN", "PROPN"}
             and t.i not in covered
@@ -215,11 +247,21 @@ class RuleExtractor:
 
         names = [e.text for e in games]
         appids = sorted({int(e.ent_id_) for e in games if e.ent_id_})
-        if like_obj is not None and not games:
-            raw = " ".join(t.text for t in like_obj.subtree if t.i <= like_obj.i)
-            names.append(raw)
-            if self.index and (aid := self.index.resolve(raw)):
-                appids.append(aid)
+        ent_tokens = {t.i for e in games for t in e}
+        if like_obj is not None:
+            # "games like A or B": every compared game, not just the first
+            for head in [like_obj, *like_obj.conjuncts]:
+                if head.i in ent_tokens or head.pos_ not in {"NOUN", "PROPN"}:
+                    continue
+                if rules.is_junk_feature(head.lemma_):
+                    continue
+                raw = " ".join(
+                    t.text for t in head.subtree if t.i <= head.i and t.pos_ not in {"DET", "PUNCT"}
+                )
+                names.append(raw)
+                if self.index and (aid := self.index.resolve(raw)):
+                    appids.append(aid)
+        appids = sorted(set(appids))
 
         is_like = like_obj is not None or bool(games and "like" in sent.text.lower())
         subject_base = base or "game"
@@ -229,6 +271,9 @@ class RuleExtractor:
             if not feats:
                 return []
             req = "genre_request"
+        negated = bool(base) and not is_like and rules.is_negated_wish(sent.text)
+        if negated:
+            req = "complaint"  # "I wish this wasn't a roguelite": a thing they do NOT want
         ref = f"like {', '.join(names)}" if is_like and names else base
         stem = ref or base
 
@@ -269,6 +314,8 @@ class RuleExtractor:
         else:
             for b in bases or [stem]:
                 stem_i = f"like {', '.join(names)}" if is_like and names else b
+                if negated:
+                    stem_i = f"without {b}"
                 subj = (
                     "genre"
                     if is_like and names
