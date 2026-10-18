@@ -60,6 +60,13 @@ CREATE TABLE IF NOT EXISTS niche_score (
 """
 
 
+# Columns added after the first release. CREATE TABLE IF NOT EXISTS never alters an existing
+# table, so databases created by older versions get these via ALTER TABLE on open.
+MIGRATIONS: list[tuple[str, str, str]] = [
+    ("want_item", "referenced_games", "TEXT"),
+]
+
+
 def now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
@@ -71,6 +78,14 @@ class Database:
         self.conn = sqlite3.connect(str(path))
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        for table, column, ddl in MIGRATIONS:
+            cols = {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+            if column not in cols:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+        self.conn.commit()
 
     # cursors -------------------------------------------------------------
     def get_cursor(self, source: str, scope: str) -> int | None:
