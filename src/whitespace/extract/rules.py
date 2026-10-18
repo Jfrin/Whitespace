@@ -122,6 +122,34 @@ _SUBJECT_LEXICON: list[tuple[str, re.Pattern[str]]] = [
         ),
     ),
 ]
+_SUBJECT_LEXICON.extend(
+    [
+        (
+            "mechanic",
+            re.compile(
+                r"progress|\bxp\b|level.?up|unlock|upgrade|skill tree|\bloot\b|\bweapons?\b"
+                r"|\bclass(es)?\b|\bskills?\b|matchmaking|\bpvp\b|\bpve\b|\bstealth\b|\bparry\b",
+                re.I,
+            ),
+        ),
+        (
+            "content",
+            re.compile(
+                r"\bstory\b|narrative|\bquests?\b|dialogue|campaign|ending|\bcontent\b|\blevels?\b"
+                r"|\bboss(es)?\b|\bmaps?\b|\bchapters?\b|\blore\b|\bcharacters?\b",
+                re.I,
+            ),
+        ),
+        (
+            "ux",
+            re.compile(
+                r"\bui\b|\bhud\b|\bmenus?\b|camera|tutorial|tooltip|\bcontrols?\b|readab|\bfont\b"
+                r"|keybind|\bsettings\b|\bslider\b|\bzoom\b",
+                re.I,
+            ),
+        ),
+    ]
+)
 GENRE = re.compile(
     r"\b(sim|simulator|simulation|rpg|roguelike|roguelite|platformer|shooter|strategy|puzzle"
     r"|survival|tycoon|metroidvania|souls.?like|4x|rts|jrpg|visual novel|deckbuilder|game)\b",
@@ -218,6 +246,31 @@ NON_DESIGN_TARGETS = {
     "help",
     "clue",
     "idea",
+    "hour",
+    "hours",
+    "reason",
+    "fix",
+    "rating",
+    "shiz",
+    "shit",
+    "crap",
+    "stuff",
+    "way",
+    "lot",
+    "bit",
+    "review",
+    "score",
+    "deficiency",
+    "sake",
+    "waste",
+    "point",
+    "part",
+    "problem",
+    "issue",
+    "bug",
+    "feeling",
+    "opinion",
+    "thought",
 }
 GENERIC_TARGETS = {"game", "games", "one", "thing", "things", "something", "anything", "it", ""}
 
@@ -250,3 +303,31 @@ def classify_scope(text: str, request_type: str, has_context_game: bool) -> str:
     if THIS_GAME.search(text) or has_context_game:
         return "game_specific"
     return "genre_wide"
+
+
+# --- precision helpers (pure, so they test without spaCy) ----------------------------------
+COMPARISON_HEADS = {"game", "title", "something", "anything", "one", "stuff", "thing"}
+
+
+def is_junk_target(lemma: str) -> bool:
+    """A noun that can't be what someone wants from a game ('hour', 'reason', 'refund')."""
+    return lemma.lower().strip() in NON_DESIGN_TARGETS
+
+
+def is_junk_feature(lemma: str) -> bool:
+    """Junk as a with/without feature: non-design nouns plus vague ones ('it', 'thing')."""
+    low = lemma.lower().strip()
+    return low in NON_DESIGN_TARGETS or low in GENERIC_TARGETS
+
+
+def like_is_comparison(sentence: str, head_lemma: str) -> bool:
+    """True for 'games like X' / 'something like X'; False for 'it feels like this'."""
+    return head_lemma.lower() in COMPARISON_HEADS or bool(GAMES_LIKE.search(sentence))
+
+
+def adjust_confidence(conf: float, subject: str, request_type: str) -> float:
+    """Items we couldn't give a design subject are the likeliest junk: lower their confidence
+    so consumers can filter with a threshold instead of us deleting rows."""
+    if subject == "other" and request_type != "games_like":
+        conf -= 0.25
+    return round(min(max(conf, 0.05), 0.9), 2)

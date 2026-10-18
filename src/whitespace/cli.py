@@ -62,7 +62,7 @@ def cmd_extract(args: argparse.Namespace, settings: Settings) -> int:
 
     index = load_index(args.games, settings.data_dir / "apps.json")
     extractor = RuleExtractor(build_nlp(index), index)
-    print(extract_all(Database(settings.db_path), extractor, limit=args.limit))
+    print(extract_all(Database(settings.db_path), extractor, limit=args.limit, redo=args.redo))
     return 0
 
 
@@ -91,7 +91,37 @@ def cmd_context(args: argparse.Namespace, settings: Settings) -> int:
     from whitespace.context import enrich_context
 
     db = Database(settings.db_path)
-    print(enrich_context(db, load_source_genres(args.context_config)))
+    print(enrich_context(db, load_source_genres(args.context_config), refresh=args.refresh))
+    return 0
+
+
+def cmd_gold_export(args: argparse.Namespace, settings: Settings) -> int:
+    from whitespace import gold
+
+    db = Database(settings.db_path)
+    if args.kind == "items":
+        rows, fields = gold.sample_items(db, args.n, args.seed), gold.ITEM_FIELDS
+        default = settings.data_dir / "gold_items.csv"
+    else:
+        rows, fields = gold.sample_missed(db, args.n, args.seed), gold.MISSED_FIELDS
+        default = settings.data_dir / "gold_missed.csv"
+    out = args.out or default
+    gold.write_csv(out, fields, rows)
+    label = "correct" if args.kind == "items" else "should_extract"
+    print(f"wrote {len(rows)} rows to {out}")
+    print(f"fill the `{label}` column with y or n, then run gold-score")
+    return 0
+
+
+def cmd_gold_score(args: argparse.Namespace, settings: Settings) -> int:
+    import json
+
+    from whitespace import gold
+
+    default = settings.data_dir / ("gold_items.csv" if args.kind == "items" else "gold_missed.csv")
+    rows = gold.read_csv(args.file or default)
+    result = gold.score_items(rows) if args.kind == "items" else gold.score_missed(rows)
+    print(json.dumps(result, indent=2))
     return 0
 
 
@@ -123,6 +153,7 @@ def main(argv: list[str] | None = None) -> int:
     ext = sub.add_parser("extract", help="regex prefilter + spaCy rule extraction (no LLM)")
     ext.add_argument("--games", default="config/games.yaml")
     ext.add_argument("--limit", type=int, default=None)
+    ext.add_argument("--redo", action="store_true", help="delete all wants and re-extract")
     ext.set_defaults(fn=cmd_extract)
     cat = sub.add_parser("catalog", help="fetch genres for every game wants refer to")
     cat.add_argument("--max-age-days", type=int, default=30)
@@ -130,7 +161,18 @@ def main(argv: list[str] | None = None) -> int:
     cat.set_defaults(fn=cmd_catalog)
     ctx = sub.add_parser("context", help="attach game, genres, and scope to extracted wants")
     ctx.add_argument("--context-config", default="config/context.yaml")
+    ctx.add_argument("--refresh", action="store_true", help="recompute every row")
     ctx.set_defaults(fn=cmd_context)
+    ge = sub.add_parser("gold-export", help="sample rows to label by hand (CSV)")
+    ge.add_argument("--kind", choices=["items", "missed"], default="items")
+    ge.add_argument("--n", type=int, default=300)
+    ge.add_argument("--seed", type=int, default=42)
+    ge.add_argument("--out", default=None)
+    ge.set_defaults(fn=cmd_gold_export)
+    gs = sub.add_parser("gold-score", help="precision / miss rate from a labeled CSV")
+    gs.add_argument("--kind", choices=["items", "missed"], default="items")
+    gs.add_argument("--file", default=None)
+    gs.set_defaults(fn=cmd_gold_score)
     sub.add_parser("stats", help="row counts").set_defaults(fn=cmd_stats)
     args = p.parse_args(argv)
     return args.fn(args, Settings.from_env())

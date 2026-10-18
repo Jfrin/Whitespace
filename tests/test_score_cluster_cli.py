@@ -59,3 +59,16 @@ def test_cli_context_and_catalog_run_on_an_empty_db(monkeypatch, tmp_path, capsy
     assert main(["catalog"]) == 0  # nothing referenced -> no network calls
     assert "0 appids referenced" in capsys.readouterr().out
     assert main(["stats"]) == 0 and "catalog_game" in capsys.readouterr().out
+
+
+def test_cli_gold_and_flags_on_an_empty_db(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("WHITESPACE_DATA_DIR", str(tmp_path))
+    assert main(["gold-export"]) == 0
+    assert (tmp_path / "gold_items.csv").exists()
+    assert main(["gold-export", "--kind", "missed"]) == 0
+    assert (tmp_path / "gold_missed.csv").exists()
+    capsys.readouterr()
+    assert main(["gold-score"]) == 0
+    assert '"labeled": 0' in capsys.readouterr().out
+    assert main(["gold-score", "--kind", "missed"]) == 0
+    assert main(["context", "--refresh", "--context-config", "config/context.yaml"]) == 0

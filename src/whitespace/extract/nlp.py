@@ -15,7 +15,7 @@ from whitespace.extract.appid import AppIndex
 from whitespace.extract.prefilter import find_trigger
 from whitespace.extract.schema import WantItem
 
-EXTRACTOR_VERSION = "rules-v0"
+EXTRACTOR_VERSION = "rules-v1"
 MODEL = "en_core_web_sm"
 PEOPLE = {
     "friend",
@@ -121,16 +121,18 @@ def _marker_features(sent) -> tuple[list[_Feature], set[int]]:
             ]
             for h in heads:
                 if h.pos_ in {"NOUN", "PROPN"} and not _is_people(h):
+                    covered.update(t.i for t in h.subtree)
+                    if rules.is_junk_feature(h.lemma_):
+                        continue
                     phrase = _phrase(h)
                     if phrase:
                         feats.append(_Feature(low, phrase))
-                    covered.update(t.i for t in h.subtree)
             covered.add(tok.i)
         elif low == "no" and tok.dep_ == "det" and tok.head.pos_ == "NOUN":
-            phrase = _phrase(tok.head)
+            covered.update(t.i for t in tok.head.subtree if t.i <= tok.head.i)
+            phrase = "" if rules.is_junk_feature(tok.head.lemma_) else _phrase(tok.head)
             if phrase:
                 feats.append(_Feature("without", phrase))
-            covered.update(t.i for t in tok.head.subtree if t.i <= tok.head.i)
     return feats, covered
 
 
@@ -139,7 +141,7 @@ def _find_target(sent, after: int, skip: set[int], games: set[int]):
         if tok.i < after or tok.i in skip or tok.i in games:
             continue
         if tok.dep_ in {"dobj", "attr", "pobj", "nsubjpass"} and tok.pos_ in {"NOUN", "PROPN"}:
-            if _is_people(tok) or tok.lemma_.lower() in rules.NON_DESIGN_TARGETS:
+            if _is_people(tok) or rules.is_junk_target(tok.lemma_):
                 continue
             if tok.head.lower_ == "like":  # that's the reference game, not the target
                 continue
@@ -179,9 +181,13 @@ class RuleExtractor:
             (
                 c
                 for t in sent
-                if t.lower_ == "like" and t.dep_ == "prep"
+                if t.lower_ == "like"
+                and t.dep_ == "prep"
+                and rules.like_is_comparison(sent.text, t.head.lemma_)
                 for c in t.children
                 if c.dep_ == "pobj"
+                and c.pos_ not in {"PRON", "DET"}
+                and not rules.is_junk_feature(c.lemma_)
             ),
             None,
         )
@@ -192,7 +198,10 @@ class RuleExtractor:
         bases = [
             _phrase(t)
             for t in ([target, *target.conjuncts] if target is not None else [])
-            if t.pos_ in {"NOUN", "PROPN"} and t.i not in covered and not _is_people(t)
+            if t.pos_ in {"NOUN", "PROPN"}
+            and t.i not in covered
+            and not _is_people(t)
+            and not rules.is_junk_target(t.lemma_)
         ]
         base = bases[0] if bases else ""
         # lexicon features (e.g. "my partner can play too" -> co-op) the parser can't isolate
@@ -237,7 +246,7 @@ class RuleExtractor:
                     want_summary=summary,
                     intensity=intensity,
                     quote=quote,
-                    confidence=min(conf, 0.9),
+                    confidence=rules.adjust_confidence(conf, subject, req),
                     referenced_games=list(names),
                     referenced_appids=list(appids),
                 )

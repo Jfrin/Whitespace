@@ -14,9 +14,12 @@ def context_text(summary: str, genres: list[str] | None, max_genres: int = 3) ->
     return f"{', '.join(g)}: {summary}" if g else summary
 
 
-def load_cluster_inputs(db: Database) -> list[tuple[int, str]]:
+def load_cluster_inputs(db: Database, min_confidence: float = 0.6) -> list[tuple[int, str]]:
+    """Wants worth clustering: confident enough (junk-prone items are scored lower)."""
     rows = db.conn.execute(
-        "SELECT id, want_summary, context_genres FROM want_item ORDER BY id"
+        "SELECT id, want_summary, context_genres FROM want_item "
+        "WHERE COALESCE(confidence, 1.0) >= ? ORDER BY id",
+        (min_confidence,),
     ).fetchall()
     return [
         (

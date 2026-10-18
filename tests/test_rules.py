@@ -79,3 +79,44 @@ def test_canonical_features_and_normalization():
 )
 def test_classify_scope(text, request_type, has_game, expected):
     assert rules.classify_scope(text, request_type, has_game) == expected
+
+
+@pytest.mark.parametrize(
+    ("phrase", "expected"),
+    [
+        ("progression system", "mechanic"),
+        ("level up", "mechanic"),
+        ("skill tree", "mechanic"),
+        ("story", "content"),
+        ("boss fights", "content"),
+        ("levels", "content"),
+        ("ui scaling", "ux"),
+        ("camera controls", "ux"),
+        ("tooltips", "ux"),
+        ("hard mode", "difficulty"),  # earlier entries still win
+        ("controller support", "platform"),
+    ],
+)
+def test_richer_subject_vocabulary(phrase, expected):
+    assert rules.classify_subject(phrase) == expected
+
+
+def test_junk_helpers():
+    assert rules.is_junk_target("Hours") and rules.is_junk_target("reason")
+    assert not rules.is_junk_target("mode") and not rules.is_junk_target("game")
+    assert rules.is_junk_feature("thing") and rules.is_junk_feature("fix")
+    assert not rules.is_junk_feature("timer")
+
+
+def test_like_is_comparison():
+    assert rules.like_is_comparison("anything", "game")
+    assert rules.like_is_comparison("looking for games like Hades", "look")
+    assert not rules.like_is_comparison("it feels like this", "feel")
+
+
+def test_adjust_confidence():
+    assert rules.adjust_confidence(0.8, "other", "feature_wish") == 0.55
+    assert rules.adjust_confidence(0.8, "mechanic", "feature_wish") == 0.8
+    assert rules.adjust_confidence(0.8, "other", "games_like") == 0.8
+    assert rules.adjust_confidence(0.95, "mechanic", "x") == 0.9
+    assert rules.adjust_confidence(0.1, "other", "x") == 0.05

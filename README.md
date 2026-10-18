@@ -76,6 +76,7 @@ docker compose run --rm --entrypoint python app -c "import sqlite3; c=sqlite3.co
 | `cluster/` | `embed.py` (UMAP + HDBSCAN, `ml` extra), `drift.py` (match clusters across runs), `text.py` (genre-prefixed text to embed) |
 | `score/gap.py` | Versioned gap formula, all weights in one dataclass |
 | `serve/app.py` | Streamlit dashboard |
+| `gold.py` | Samples extractions to label by hand and scores precision / miss rate from the labeled CSV |
 | `storage.py` | SQLite schema, raw store, automatic migrations for older databases |
 | `tests/` | Offline tests: HTTP mocked with `httpx.MockTransport`, HTML from fixtures |
 
@@ -111,18 +112,48 @@ is persisted between runs (see the TODO in the file).
    ("wish", "looking for") -> 2; neutral phrasing -> 1. The request wording is stripped before
    scoring so "would be great if" doesn't count as emotion.
 
-### Known problems (seen on real Steam data)
+### Quality controls
 
-The first real run showed the happy path works but the rules leak junk:
+The first real run showed the happy path works but leaked junk ("like this", "hour without reason",
+"meh rating"). The second pass (`rules-v1`) adds:
 
-- `games_like` items whose object is a pronoun or generic noun ("like this", "like it")
-- negation items with non-design heads ("hour without reason", "deficiency without fix")
-- one-word complaints or slang captured as a want ("meh rating", "shiz")
-- partial or abbreviated game names ("Binding", "DBD") missing from the gazetteer
-- wishes written as a relative clause with no marker are missed entirely
+- `games_like` only when `like` is a comparison and its object isn't a pronoun or generic noun
+- a wider stoplist of non-design nouns, applied to targets and to with/without features
+- `content` and `ux` subjects, plus progression/skills/loot as `mechanic`
+- **confidence penalty**: items with no design subject lose 0.25 confidence. Rows are kept; consumers
+  filter (`cluster/text.py` keeps `confidence >= 0.6`)
 
-`confidence` is a heuristic score, not a probability. Build a hand-labeled gold set before trusting
-the output; thresholds in `rules.py` should be tuned against it.
+`confidence` is a heuristic score, not a probability. Remaining known gaps: wishes written as a
+relative clause with no marker ("a game where you run a bakery") are missed, and lowercase or
+abbreviated game names resolve less reliably than exact ones.
+
+### Measuring quality (gold set)
+
+Rules can only be tuned against labels, so there is tooling for it (no model involved):
+
+```powershell
+docker compose run --rm app gold-export --kind items --n 300    # extracted wants -> data/gold_items.csv
+docker compose run --rm app gold-export --kind missed --n 100   # trigger posts with no want -> data/gold_missed.csv
+# open the CSV, fill `correct` (items) or `should_extract` (missed) with y / n, save
+docker compose run --rm app gold-score --kind items
+docker compose run --rm app gold-score --kind missed
+```
+
+`gold-score --kind items` reports precision overall, by request type / subject / scope, and above vs.
+below the 0.6 confidence threshold (so you can see whether the threshold is earning its keep).
+`--kind missed` reports how often a trigger post that produced nothing should have produced a want.
+Sampling is seeded (`--seed`), so exports are reproducible.
+
+### Re-running after rule changes
+
+```powershell
+docker compose --profile pipeline build app
+docker compose run --rm app extract --redo       # deletes all wants and re-extracts from posts
+docker compose run --rm app catalog
+docker compose run --rm app context --refresh    # recompute scope + genres for every row
+```
+
+`--redo` only deletes `want_item` rows; posts, raw files, and the catalog are untouched.
 
 ## Context: every want knows what it was said about
 
@@ -143,8 +174,9 @@ stay NULL and are retried on the next `context` run, so it is safe to re-run. Cl
 built by `cluster/text.py` as `"action, rpg: faster progression system"`, so the same want in
 different genres lands in different niches.
 
-Known limits: Steam genres are coarse and "Indie" is on a huge share of games, so a stoplist of
-non-niche genres is still to do. Finer user tags would come from a third party and are not used.
+Known limits: Steam genres are coarse. Non-niche ones (Indie, Early Access, Free To Play, content
+flags, non-game software) are filtered out when resolving. Finer user tags would come from a third
+party and are not used.
 The catalog endpoint is throttled by Steam; a 429 stops the run and the next run resumes.
 
 ## Adding a source

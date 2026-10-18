@@ -9,3 +9,19 @@ games:
   - {appid: 892970, name: Valheim, aliases: []}
   - {appid: 526870, name: Satisfactory, aliases: []}
   - {appid: 427520, name: Factorio, aliases: []}
+  # Added after the first real run (aliases fix partial names like "DBD", "Binding", "Gungeon").
+  # Verify any appid at https://store.steampowered.com/app/<appid> before relying on it.
+  - {appid: 250900, name: "The Binding of Isaac: Rebirth", aliases: [Binding, TBOI]}
+  - {appid: 381210, name: Dead by Daylight, aliases: [DBD]}
+  - {appid: 212680, name: "FTL: Faster Than Light", aliases: [FTL]}
+  - {appid: 311690, name: Enter the Gungeon, aliases: [Gungeon]}
+  - {appid: 242680, name: Nuclear Throne, aliases: []}
+  - {appid: 2344520, name: Diablo IV, aliases: [Diablo]}
+  - {appid: 646570, name: Slay the Spire, aliases: []}
+  - {appid: 367520, name: Hollow Knight, aliases: []}
+  - {appid: 1794680, name: Vampire Survivors, aliases: []}
+  - {appid: 2379780, name: Balatro, aliases: []}
+  - {appid: 632360, name: Risk of Rain 2, aliases: [RoR2]}
+  - {appid: 262060, name: Darkest Dungeon, aliases: []}
+  - {appid: 1868140, name: Dave the Diver, aliases: []}
+  - {appid: 1313140, name: Cult of the Lamb, aliases: []}

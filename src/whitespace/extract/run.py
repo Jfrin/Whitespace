@@ -11,7 +11,13 @@ from whitespace.storage import Database
 Extractor = Callable[[str], list[WantItem]]
 
 
-def extract_all(db: Database, extractor: Extractor, limit: int | None = None) -> dict[str, int]:
+def extract_all(
+    db: Database, extractor: Extractor, limit: int | None = None, redo: bool = False
+) -> dict[str, int]:
+    """`redo` deletes every want_item first (posts are untouched) so new rules re-run on all."""
+    if redo:
+        db.conn.execute("DELETE FROM want_item")
+        db.conn.commit()
     rows = db.conn.execute(
         "SELECT p.* FROM post p LEFT JOIN want_item w ON w.post_id = p.id "
         "WHERE w.id IS NULL AND json_extract(p.flags,'$.is_dup') = 0 "

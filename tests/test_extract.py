@@ -115,5 +115,25 @@ def test_gazetteer_loader_merges_yaml_and_bulk_json(tmp_path):
     assert load_index(tmp_path / "missing.yaml").resolve("x") is None  # absent files are fine
 
 
-def test_shipped_games_config_loads():
-    assert load_index("config/games.yaml").resolve("stardew") == 413150
+def test_shipped_games_config_loads_with_aliases_for_partial_names():
+    idx = load_index("config/games.yaml")
+    assert idx.resolve("stardew") == 413150
+    assert idx.resolve("DBD") == 381210 and idx.resolve("gungeon") == 311690
+    assert idx.resolve("FTL") == 212680 and idx.resolve("Binding") == 250900
+
+
+def test_extract_all_redo_replaces_existing_wants(db):
+    db.upsert_post(Post("s", "1", "u", "I wish there was a co-op farming game with automation", 1))
+    _flag_all(db)
+
+    def old_rules(text):
+        return [WantItem("feature_wish", "mechanic", "old summary", 2, "q", 0.8)]
+
+    def new_rules(text):
+        return [WantItem("feature_wish", "mechanic", "new summary", 2, "q", 0.8)]
+
+    extract_all(db, old_rules)
+    assert extract_all(db, new_rules)["candidates"] == 0  # already extracted: skipped
+    extract_all(db, new_rules, redo=True)
+    rows = [r["want_summary"] for r in db.conn.execute("SELECT want_summary FROM want_item")]
+    assert rows == ["new summary"]

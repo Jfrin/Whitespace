@@ -116,3 +116,19 @@ def test_single_word_gazetteer_entries_are_case_sensitive():
 def test_like_context_resolves_lowercase_names(extract):
     # inside "games like X" the object is surely a game, so case doesn't matter
     assert extract("Is there a game like hades with co-op?")[0].referenced_appids == [1145360]
+
+
+def test_generic_like_objects_are_not_treated_as_games(extract):
+    items = extract("Is there a game like this with a co-op mode?")
+    assert not any(i.want_summary.startswith("like this") for i in items)
+    assert all(i.referenced_appids == [] for i in items)
+
+
+def test_junk_nouns_do_not_become_features(extract):
+    items = extract("I want a farming sim without any fix or reason to quit.")
+    assert not any(word in i.want_summary for i in items for word in ("fix", "reason"))
+
+
+def test_items_without_a_design_subject_get_lower_confidence(extract):
+    items = extract("I wish it had a unicorn.")
+    assert items and all(i.subject == "other" and i.confidence < 0.6 for i in items)

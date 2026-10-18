@@ -23,3 +23,12 @@ def test_load_cluster_inputs_reads_context_from_the_db(db, add_want):
     db.conn.execute("UPDATE want_item SET context_genres=? WHERE id=?", (json.dumps(["RPG"]), a))
     db.conn.commit()
     assert load_cluster_inputs(db) == [(a, "rpg: faster progression"), (b, "photo mode")]
+
+
+def test_low_confidence_wants_are_left_out_of_clustering(db, add_want):
+    a = add_want("1", summary="progression system")
+    b = add_want("2", summary="hour")
+    db.conn.execute("UPDATE want_item SET confidence=0.3 WHERE id=?", (b,))
+    db.conn.commit()
+    assert [i for i, _ in load_cluster_inputs(db)] == [a]
+    assert [i for i, _ in load_cluster_inputs(db, min_confidence=0.0)] == [a, b]

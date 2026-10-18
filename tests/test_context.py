@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from whitespace.context import enrich_context, resolve_genres, source_context
+from whitespace.context import enrich_context, niche_genres, resolve_genres, source_context
 from whitespace.models import CatalogGame
 
 STARDEW = CatalogGame(413150, "Stardew Valley", ["Indie", "RPG", "Simulation"])
@@ -19,7 +19,7 @@ def test_steam_review_want_is_game_specific_with_catalog_genres(db, add_want):
     stats = enrich_context(db)
     row = _row(db, w)
     assert row["scope"] == "game_specific" and row["context_appid"] == 413150
-    assert json.loads(row["context_genres"]) == ["Indie", "RPG", "Simulation"]
+    assert json.loads(row["context_genres"]) == ["RPG", "Simulation"]
     assert row["source_context"] is None
     assert stats == {"rows": 1, "with_genres": 1, "unresolved": 0}
 
@@ -52,7 +52,7 @@ def test_reference_want_inherits_genres_of_the_referenced_game(db, add_want):
     enrich_context(db)
     row = _row(db, w)
     assert row["scope"] == "reference"
-    assert json.loads(row["context_genres"]) == ["Action", "Indie", "RPG"]  # Hades, not Stardew
+    assert json.loads(row["context_genres"]) == ["Action", "RPG"]  # Hades, not Stardew
 
 
 def test_unresolved_genres_stay_null_and_fill_in_on_a_later_run(db, add_want):
@@ -80,9 +80,9 @@ def test_resolve_genres_priority_depends_on_scope(db):
     db.upsert_catalog(HADES)
     src = {"reddit:x": ["Casual"]}
     args = (db, "game_specific", 413150, [1145360], "reddit:x", src)
-    assert resolve_genres(*args) == ["Indie", "RPG", "Simulation"]  # own game first
+    assert resolve_genres(*args) == ["RPG", "Simulation"]  # own game first
     args = (db, "reference", 413150, [1145360], "reddit:x", src)
-    assert resolve_genres(*args) == ["Action", "Indie", "RPG"]  # referenced first
+    assert resolve_genres(*args) == ["Action", "RPG"]  # referenced first
     assert resolve_genres(db, "genre_wide", None, [], "reddit:x", src) == ["Casual"]
     assert resolve_genres(db, "genre_wide", None, [], None, src) == []
 
@@ -98,3 +98,31 @@ def test_resolve_genres_priority_depends_on_scope(db):
 )
 def test_source_context(source, meta, expected):
     assert source_context(source, meta) == expected
+
+
+def test_non_niche_genres_are_filtered():
+    assert niche_genres(["Indie", "RPG", "Early Access", "Free to Play", "Action"]) == [
+        "RPG",
+        "Action",
+    ]
+
+
+def test_game_with_only_non_niche_genres_stays_unresolved(db, add_want):
+    db.upsert_catalog(CatalogGame(5, "Only Indie", ["Indie"]))
+    w = add_want("1", game_appid=5)
+    assert enrich_context(db)["unresolved"] == 1
+    assert _row(db, w)["context_genres"] is None
+
+
+def test_refresh_reapplies_current_rules_to_resolved_rows(db, add_want):
+    db.upsert_catalog(CatalogGame(413150, "Stardew Valley", ["Indie", "RPG"]))
+    w = add_want("1", game_appid=413150)
+    # a row enriched by an older version, before the stoplist existed
+    db.conn.execute(
+        "UPDATE want_item SET scope='game_specific', context_genres=? WHERE id=?",
+        (json.dumps(["Indie", "RPG"]), w),
+    )
+    db.conn.commit()
+    assert enrich_context(db)["rows"] == 0
+    assert enrich_context(db, refresh=True)["rows"] == 1
+    assert json.loads(_row(db, w)["context_genres"]) == ["RPG"]

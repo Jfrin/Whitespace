@@ -11,6 +11,9 @@ SUBJECTS = {
     "platform",
     "difficulty",
     "session_length",
+    "genre",
+    "content",
+    "ux",
     "other",
 }
 
