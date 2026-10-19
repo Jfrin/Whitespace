@@ -103,7 +103,7 @@ def test_responses_are_cached_across_calls_and_instances(db):
     ex, _ = make(db, handler)
     ex(TEXT)
     ex(TEXT)
-    ex2, _ = make(db, handler)                      # new instance, same database
+    ex2, _ = make(db, handler)  # new instance, same database
     assert len(ex2(TEXT)) == 1
     assert len(calls) == 1 and ex.stats["cache_hits"] == 1 and ex2.stats["cache_hits"] == 1
 
@@ -131,7 +131,7 @@ def test_server_errors_retry_then_stop(db):
     ex, _ = make(db, handler)
     with pytest.raises(ExtractorStop, match="giving up"):
         ex(TEXT)
-    assert len(calls) == 3                          # first try + 2 retries
+    assert len(calls) == 3  # first try + 2 retries
 
 
 def test_auth_and_unknown_model_errors_stop_immediately(db):
@@ -167,7 +167,7 @@ def test_unparseable_output_is_empty_and_not_cached(db):
     )
     ex, _ = make(db, lambda req: next(answers))
     assert ex(TEXT) == [] and ex.stats["bad_json"] == 1
-    assert len(ex(TEXT)) == 1                       # retried because the failure wasn't cached
+    assert len(ex(TEXT)) == 1  # retried because the failure wasn't cached
 
 
 def test_markup_is_stripped_before_sending_and_quotes_still_verify(db):
@@ -186,7 +186,7 @@ def test_markup_is_stripped_before_sending_and_quotes_still_verify(db):
 def test_quote_matching_is_forgiving_about_case_spacing_and_curly_quotes():
     text = "It doesn\u2019t have   a MAP.  Really."
     assert quote_in_text("it doesn't have a map", text)
-    assert quote_in_text("\"it doesn't have a map...\"", text)
+    assert quote_in_text('"it doesn\'t have a map..."', text)
     assert not quote_in_text("", text) and not quote_in_text("totally different", text)
 
 

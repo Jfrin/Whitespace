@@ -30,14 +30,34 @@ def test_csv_roundtrip_keeps_unicode_quotes_and_newlines(tmp_path):
 
 def test_score_items_precision_breakdowns_and_confidence_split():
     rows = [
-        {"correct": "y", "request_type": "feature_wish", "subject": "mechanic",
-         "scope": "game_specific", "confidence": "0.9"},
-        {"correct": "y", "request_type": "feature_wish", "subject": "mechanic",
-         "scope": "game_specific", "confidence": "0.8"},
-        {"correct": "n", "request_type": "games_like", "subject": "other",
-         "scope": "reference", "confidence": "0.4"},
-        {"correct": "", "request_type": "feature_wish", "subject": "other",
-         "scope": "x", "confidence": "0.9"},                                   # unlabeled
+        {
+            "correct": "y",
+            "request_type": "feature_wish",
+            "subject": "mechanic",
+            "scope": "game_specific",
+            "confidence": "0.9",
+        },
+        {
+            "correct": "y",
+            "request_type": "feature_wish",
+            "subject": "mechanic",
+            "scope": "game_specific",
+            "confidence": "0.8",
+        },
+        {
+            "correct": "n",
+            "request_type": "games_like",
+            "subject": "other",
+            "scope": "reference",
+            "confidence": "0.4",
+        },
+        {
+            "correct": "",
+            "request_type": "feature_wish",
+            "subject": "other",
+            "scope": "x",
+            "confidence": "0.9",
+        },  # unlabeled
     ]
     out = gold.score_items(rows)
     assert out["labeled"] == 3 and out["unlabeled"] == 1
@@ -60,7 +80,7 @@ def test_score_missed():
 
 
 def test_sample_missed_only_cleaned_trigger_posts_without_wants(db, add_want):
-    add_want("w")                                                             # has a want
+    add_want("w")  # has a want
     db.upsert_post(Post("s", "c", "u", "I wish there was a farming game with automation", 1))
     db.upsert_post(Post("s", "d", "u", "Great game, played for 200 hours and loved it a lot", 2))
     db.upsert_post(Post("s", "e", "u", "I wish there was a farming game with automation too", 3))
@@ -81,7 +101,7 @@ def test_sample_untriggered_is_the_complement_of_missed(db):
     texts = " ".join(r["text_excerpt"] for r in rows)
     assert len(rows) == 2 and "farming game" not in texts and "Needs more content" in texts
     assert set(rows[0]) == set(gold.UNTRIGGERED_FIELDS)
-    assert len(gold.sample_missed(db, 10)) == 1        # the trigger post, which has no want
+    assert len(gold.sample_missed(db, 10)) == 1  # the trigger post, which has no want
 
 
 def test_score_untriggered_and_kind_table():
