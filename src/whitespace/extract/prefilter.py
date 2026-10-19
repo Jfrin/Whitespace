@@ -42,3 +42,23 @@ def find_trigger(text: str) -> int | None:
     text = _n(text)
     hits = [m.start() for p in _COMPILED if (m := p.search(text))]
     return min(hits) if hits else None
+
+
+# Cheap cues that a post may complain about something missing. Deliberately broad: the real
+# decision is made by the dependency rules, this only skips posts with no chance at all.
+LACK_PATTERN = re.compile(
+    r"\bno\b|\bwithout\b|\bmissing\b|\black(s|ed|ing)?\b|\bcan'?t\b|\bcannot\b|\bcould(n'?t| not)\b"
+    r"|\bunable\b|\b(doesn|don|didn|won)'?t\b|\bnot (able|allowed|possible)\b|\bhard to\b"
+    r"|\bdifficult to\b|\bimpossible to\b|\bunclear\b|\bnever (explain|tell|teach)"
+    r"|\bnot enough\b|n't enough\b|\b(very|too|so) (little|few)\b",
+    re.I,
+)
+
+
+def has_lack_cue(text: str) -> bool:
+    return bool(LACK_PATTERN.search(_n(text)))
+
+
+def is_any_candidate(text: str) -> bool:
+    """Worth running the full extractor on: a wish trigger OR a complaint cue."""
+    return is_candidate(text) or has_lack_cue(text)

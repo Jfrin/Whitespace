@@ -12,6 +12,7 @@ from collections.abc import Iterable
 from whitespace.extract.rules import classify_scope
 from whitespace.storage import Database
 
+
 # Steam genres that don't describe a niche ("Indie" is on a huge share of the catalog; Gore and
 # Nudity are content flags; the rest are non-game software categories).
 NON_NICHE_GENRES = {

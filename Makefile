@@ -25,7 +25,7 @@ ingest:       ## make ingest SOURCE=steam_reviews
 clean-posts:
 	$(RUN) app clean
 
-extract:      ## spaCy rule extraction, no API keys
+extract:      ## Gemini extraction (GEMINI_API_KEY in .env); --extractor rules for offline
 	$(RUN) app extract --limit 200
 
 catalog:      ## fetch genres for referenced games

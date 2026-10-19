@@ -149,10 +149,11 @@ def test_steam_markup_does_not_leak_into_wants(extract):
     assert not any("[" in i.want_summary or "h1" in i.want_summary for i in items)
 
 
-def test_negated_wish_becomes_a_complaint_about_the_thing(extract):
+def test_negated_wish_means_the_absence_of_the_thing(extract):
     items = extract("I wish this wasn't a roguelite.")
-    got = {(i.request_type, i.want_summary) for i in items}
-    assert ("complaint", "without roguelite") in got
+    assert any(
+        i.want_summary == "without roguelite" and i.request_type != "complaint" for i in items
+    )
 
 
 def test_some_kind_of_x_resolves_to_x(extract):
@@ -179,3 +180,46 @@ def test_every_game_in_a_comparison_list_is_captured(extract):
     items = extract(text)
     names = " ".join(g for i in items for g in i.referenced_games)
     assert "Dead Cells" in names
+
+
+def _summaries(items):
+    return {i.want_summary for i in items}
+
+
+def test_no_x_becomes_a_complaint_in_positive_form(extract):
+    items = extract("There are no fast restarts and no instructions.")
+    assert {"fast restart", "in-game instructions"} <= _summaries(items)
+    assert all(i.request_type == "complaint" for i in items)
+
+
+def test_no_way_to_verb_object(extract):
+    assert "control rebinding" in _summaries(extract("There is no way to rebind the controls."))
+
+
+def test_lacks_and_missing(extract):
+    assert "checkpoints" in _summaries(extract("The game lacks checkpoints."))
+    assert "checkpoints" in _summaries(extract("Checkpoints are missing."))
+
+
+def test_cannot_verb_object(extract):
+    assert "skip dialogue" in _summaries(extract("You cannot skip the dialogue."))
+
+
+def test_without_x_with_a_negative_word(extract):
+    text = "Without QoL mods, this game is a huge slog."
+    assert "quality-of-life features" in _summaries(extract(text))
+
+
+def test_not_enough_x_means_more_x(extract):
+    assert "more content" in _summaries(extract("There is not enough content."))
+
+
+def test_hard_to_know_what_to_do_means_instructions(extract):
+    text = "It is very hard to know what you are supposed to do."
+    assert "in-game instructions" in _summaries(extract(text))
+
+
+def test_complaint_noise_is_dropped_or_penalised(extract):
+    assert extract("There is no refund and no reason to play.") == []
+    soup = extract("There is no soup.")
+    assert soup and all(i.confidence < 0.6 for i in soup)

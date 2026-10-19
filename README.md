@@ -2,7 +2,8 @@
 
 Mine player demand ("I wish it had X") from public sources, tie each want to the game and genre it
 was said about, cluster wants into niches, and score **demand vs. supply** to find under-served game
-ideas. Everything runs in Docker. No LLM, no API keys.
+ideas. Everything runs in Docker. Meaning extraction uses the free Gemini API; an offline spaCy rules
+extractor is included as a fallback and as a baseline to compare against.
 
 ```
 sources -> ingest -> raw store -> clean -> extract -> (context) -> cluster -> gap score -> dashboard
@@ -94,9 +95,40 @@ with the coverage gate, then builds the prod and dashboard images and smoke-test
 `pipeline.yml` is a manual ingest+clean run; its schedule stays commented out until the SQLite file
 is persisted between runs (see the TODO in the file).
 
-## How extraction works (no LLM)
+## Extraction with Gemini (default)
 
-`whitespace extract` turns a post into structured wants in four deterministic steps:
+```powershell
+# put GEMINI_API_KEY=... in .env  (copy .env.example), then:
+docker compose --profile pipeline build app
+docker compose run --rm app gemini-models                  # models your key can call
+docker compose run --rm app extract --limit 100            # try a small batch first
+docker compose run --rm app extract                        # the rest
+docker compose run --rm app extract --extractor rules      # offline spaCy fallback
+```
+
+How it behaves:
+
+- **Model:** `gemini-2.5-flash-lite` by default (listed with a free tier). Override with
+  `GEMINI_MODEL` or `--model`. Exact free quotas per model are shown in AI Studio for your project;
+  set `GEMINI_RPM` (default 10) to match.
+- **Free-tier quota:** a per-minute 429 is waited out; a **daily** 429 stops the run cleanly
+  (`stopped: 1` in the output) and the next day's run resumes. Every response is cached in
+  `llm_cache`, so `--redo`, re-runs, and the cached part of a resumed run cost no quota.
+- **Sends every English cleaned post** by default (`--prefilter all`), because the LLM finds implicit
+  demand the regexes can't. `--prefilter cue` sends only posts with a wish trigger or lack cue.
+- **Guards:** output is forced to a JSON schema; each item must pass the same strict validation as the
+  rules path; and the model's `quote` must appear verbatim in the post or the item is dropped
+  (`bad_quote` in the stats counts these). Markup (Steam BBCode) is stripped before sending.
+- **What it sends:** only public review text, no usernames. On Google's free tier, submitted content
+  may be used to improve their products; that is fine for public reviews, but don't send anything
+  private. The paid tier doesn't do this.
+- **Comparing extractors:** every want records `extractor_version` (e.g. `gemini-v1:gemini-2.5-flash-lite`
+  or `rules-v2`). `gold-export` includes the column and `gold-score` reports `by_extractor`, so label
+  a sample from each and compare precision directly.
+
+## Rules extractor (offline fallback)
+
+`whitespace extract --extractor rules` turns a post into structured wants in deterministic steps:
 
 1. **Prefilter** (`prefilter.py`): regex triggers ("I wish", "kill for", "games like", ...).
 2. **Dependency parse + markers** (`nlp.py`): spaCy finds the wanted noun, then `with X` /
@@ -125,8 +157,9 @@ The first real run showed the happy path works but leaked junk ("like this", "ho
 
 Extraction is **English-only**: posts whose language tag isn't English are skipped and counted as
 `non_english` in the `extract` output (about a third of the first Steam sample). `complaint` items
-("I wish this wasn't a roguelite") are emitted for negated wishes only; a general complaint channel
-("no X", "can't X") is a pending decision in `PLAN.md`.
+are emitted by a separate lack channel ("no X", "can't X", "lacks X", "not enough X"), written as the
+thing that is missing in positive form ("no fast restarts" becomes `fast restart`) so they cluster
+with wishes. Negated wishes ("I wish this wasn't a roguelite") stay `without roguelite`.
 
 `confidence` is a heuristic score, not a probability. Remaining known gaps: wishes written as a
 relative clause with no marker ("a game where you run a bakery") are missed, and lowercase or

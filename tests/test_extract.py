@@ -4,7 +4,13 @@ import pytest
 
 from whitespace.extract.appid import AppIndex
 from whitespace.extract.gazetteer import load_index
-from whitespace.extract.prefilter import find_trigger, is_candidate, match_patterns
+from whitespace.extract.prefilter import (
+    find_trigger,
+    has_lack_cue,
+    is_any_candidate,
+    is_candidate,
+    match_patterns,
+)
 from whitespace.extract.run import extract_all
 from whitespace.extract.schema import WantItem, validate_item
 from whitespace.models import Post
@@ -133,7 +139,7 @@ def test_extract_all_redo_replaces_existing_wants(db):
         return [WantItem("feature_wish", "mechanic", "new summary", 2, "q", 0.8)]
 
     extract_all(db, old_rules)
-    assert extract_all(db, new_rules)["candidates"] == 0  # already extracted: skipped
+    assert extract_all(db, new_rules)["candidates"] == 0       # already extracted: skipped
     extract_all(db, new_rules, redo=True)
     rows = [r["want_summary"] for r in db.conn.execute("SELECT want_summary FROM want_item")]
     assert rows == ["new summary"]
@@ -160,3 +166,27 @@ def test_games_from_the_first_gold_review_resolve():
     idx = load_index("config/games.yaml")
     assert idx.resolve("dead cells") == 588650 and idx.resolve("CS2") == 730
     assert idx.resolve("Wizard of Legend") == 445980
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "There is no way to rebind controls",
+        "You can't skip the dialogue",
+        "cant skip it",
+        "It doesn\u2019t have a map",
+        "It lacks checkpoints",
+        "Not enough content",
+        "unplayable without the wiki",
+        "very hard to know what to do",
+        "missing a tutorial",
+    ],
+)
+def test_lack_cues_hit(text):
+    assert has_lack_cue(text) and is_any_candidate(text)
+
+
+def test_lack_cues_miss_plain_praise():
+    assert not has_lack_cue("Great game, played for 200 hours and loved it")
+    assert not is_any_candidate("I love the music and the art")
+    assert is_any_candidate("I wish it had co-op")        # wish triggers still count

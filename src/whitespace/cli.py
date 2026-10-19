@@ -57,12 +57,52 @@ def cmd_clean(args: argparse.Namespace, settings: Settings) -> int:
 
 def cmd_extract(args: argparse.Namespace, settings: Settings) -> int:
     from whitespace.extract.gazetteer import load_index
-    from whitespace.extract.nlp import RuleExtractor, build_nlp
     from whitespace.extract.run import extract_all
 
     index = load_index(args.games, settings.data_dir / "apps.json")
+    db = Database(settings.db_path)
+    name = args.extractor or ("gemini" if os.environ.get("GEMINI_API_KEY") else "rules")
+    if name == "gemini":
+        key = os.environ.get("GEMINI_API_KEY")
+        if not key:
+            print(
+                "GEMINI_API_KEY is not set. Get a free key at https://aistudio.google.com/apikey "
+                "and put it in .env (or use --extractor rules).",
+                file=sys.stderr,
+            )
+            return 2
+        from whitespace.extract.gemini import DEFAULT_MODEL, GeminiExtractor
+
+        model = args.model or os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
+        rpm = args.rpm or float(os.environ.get("GEMINI_RPM", "10"))
+        with httpx.Client(timeout=60.0) as client:
+            extractor = GeminiExtractor(db, key, model=model, client=client, rpm=rpm, index=index)
+            stats = extract_all(
+                db, extractor, limit=args.limit, redo=args.redo, prefilter=args.prefilter or "all"
+            )
+        print(stats)
+        print(f"gemini {model}: {extractor.stats}")
+        return 0
+    from whitespace.extract.nlp import RuleExtractor, build_nlp
+
     extractor = RuleExtractor(build_nlp(index), index)
-    print(extract_all(Database(settings.db_path), extractor, limit=args.limit, redo=args.redo))
+    stats = extract_all(
+        db, extractor, limit=args.limit, redo=args.redo, prefilter=args.prefilter or "cue"
+    )
+    print(stats)
+    return 0
+
+
+def cmd_gemini_models(args: argparse.Namespace, settings: Settings) -> int:
+    key = os.environ.get("GEMINI_API_KEY")
+    if not key:
+        print("GEMINI_API_KEY is not set", file=sys.stderr)
+        return 2
+    from whitespace.extract.gemini import list_models
+
+    with httpx.Client(timeout=30.0) as client:
+        for name in list_models(key, client):
+            print(name)
     return 0
 
 
@@ -154,11 +194,18 @@ def main(argv: list[str] | None = None) -> int:
     ing.add_argument("source")
     ing.set_defaults(fn=cmd_ingest)
     sub.add_parser("clean", help="flag dups / low-effort / language").set_defaults(fn=cmd_clean)
-    ext = sub.add_parser("extract", help="regex prefilter + spaCy rule extraction (no LLM)")
+    ext = sub.add_parser("extract", help="extract wants (Gemini API, or offline spaCy rules)")
+    ext.add_argument("--extractor", choices=["gemini", "rules"], default=None)
+    ext.add_argument("--model", default=None, help="Gemini model id (default: GEMINI_MODEL)")
+    ext.add_argument("--rpm", type=float, default=None, help="requests/min (default: GEMINI_RPM)")
+    ext.add_argument("--prefilter", choices=["cue", "all"], default=None)
     ext.add_argument("--games", default="config/games.yaml")
     ext.add_argument("--limit", type=int, default=None)
     ext.add_argument("--redo", action="store_true", help="delete all wants and re-extract")
     ext.set_defaults(fn=cmd_extract)
+    sub.add_parser("gemini-models", help="models your key can call").set_defaults(
+        fn=cmd_gemini_models
+    )
     cat = sub.add_parser("catalog", help="fetch genres for every game wants refer to")
     cat.add_argument("--max-age-days", type=int, default=30)
     cat.add_argument("--limit", type=int, default=None, help="max games to fetch this run")

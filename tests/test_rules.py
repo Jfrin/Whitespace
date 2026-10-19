@@ -93,7 +93,7 @@ def test_classify_scope(text, request_type, has_game, expected):
         ("ui scaling", "ux"),
         ("camera controls", "ux"),
         ("tooltips", "ux"),
-        ("hard mode", "difficulty"),  # earlier entries still win
+        ("hard mode", "difficulty"),          # earlier entries still win
         ("controller support", "platform"),
     ],
 )
@@ -132,16 +132,8 @@ def test_normalize_text_strips_steam_bbcode():
 
 @pytest.mark.parametrize(
     ("lang", "expected"),
-    [
-        (None, True),
-        ("", True),
-        ("en", True),
-        ("english", True),
-        ("English", True),
-        ("russian", False),
-        ("und", False),
-        ("schinese", False),
-    ],
+    [(None, True), ("", True), ("en", True), ("english", True), ("English", True),
+     ("russian", False), ("und", False), ("schinese", False)],
 )
 def test_is_english(lang, expected):
     assert rules.is_english(lang) is expected
@@ -155,7 +147,7 @@ def test_is_english(lang, expected):
         ("i wish i hadn't bought it", True),
         ("I wish it had co-op", False),
         ("I wish I could recommend it", False),
-        ("Why isn't there co-op, I wish", False),  # negation before the wish
+        ("Why isn't there co-op, I wish", False),          # negation before the wish
     ],
 )
 def test_is_negated_wish(text, expected):
@@ -186,3 +178,44 @@ def test_off_topic_targets_are_junk():
         assert rules.is_junk_target(word), word
     for word in ("checkpoint", "progression", "mode", "story"):
         assert not rules.is_junk_target(word), word
+
+
+@pytest.mark.parametrize(
+    ("phrase", "expected"),
+    [
+        ("fast restart", "fast restart"),
+        ("restarts", "fast restart"),
+        ("instruction", "in-game instructions"),
+        ("tutorial", "in-game instructions"),
+        ("wiki", "in-game instructions"),
+        ("rebind control", "control rebinding"),
+        ("checkpoint", "checkpoints"),
+        ("qol mod", "quality-of-life features"),
+        ("difficulty option", "difficulty options"),
+        ("boss", "boss"),
+    ],
+)
+def test_canonical_need(phrase, expected):
+    assert rules.canonical_need(phrase) == expected
+
+
+def test_ux_complaint_and_not_enough():
+    text = "very hard to know what youre supposed to do"
+    assert rules.ux_complaint(text) == "in-game instructions"
+    assert rules.ux_complaint("it never explains anything") == "in-game instructions"
+    assert rules.ux_complaint("great game") is None
+    assert rules.has_not_enough("there is not enough content")
+    assert rules.has_not_enough("that isn't enough")
+    assert not rules.has_not_enough("enough already")
+
+
+def test_normalize_text_restores_dropped_apostrophes():
+    assert rules.normalize_text("I cant use it and dont know") == "I can't use it and don't know"
+    assert rules.normalize_text("It doesnt work, isnt fun") == "It doesn't work, isn't fun"
+
+
+def test_strip_markup_keeps_words_as_written():
+    assert rules.strip_markup("[h1]I wish[/h1]   it had co-op\n[b]please[/b]") == (
+        "I wish it had co-op please"
+    )
+    assert rules.strip_markup(None) == ""
