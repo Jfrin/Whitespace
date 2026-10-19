@@ -154,7 +154,14 @@ _SUBJECT_LEXICON.extend(
     [
         ("mechanic", re.compile(r"checkpoint|auto.?save|restart|respawn", re.I)),
         ("content", re.compile(r"replayab|variety", re.I)),
-        ("ux", re.compile(r"rebind|remap|instruction|\bguide\b|walkthrough|\bwiki\b", re.I)),
+        (
+            "ux",
+            re.compile(
+                r"rebind|remap|instruction|\bguide\b|walkthrough|\bwiki\b|\bqol\b|quality.of.life"
+                r"|\b(pause|skip|undo|resume|retry|zoom|rotate|resize)\b|customi[sz]",
+                re.I,
+            ),
+        ),
     ]
 )
 GENRE = re.compile(
@@ -206,6 +213,12 @@ def normalize_text(text: str) -> str:
     """Pre-parse cleanup: stops the tokenizer splitting 'co-op' into three tokens."""
     text = text.replace("\u2019", "'").replace("\u2018", "'")
     text = BBCODE.sub(" ", text)
+    text = re.sub(
+        r"\b(can|don|doesn|didn|won|isn|wasn|couldn|wouldn|shouldn|haven|hasn|aren|weren)t\b",
+        r"\1't",
+        text,
+        flags=re.I,
+    )
     text = re.sub(r"\bco[- ]?op\b", "coop", text, flags=re.I)
     return re.sub(r"\s+", " ", text).strip()
 
@@ -302,6 +315,18 @@ NON_DESIGN_TARGETS = {
     "icon",
     "thumb",
     "recommendation",
+    "matter",
+    "doubt",
+    "question",
+    "need",
+    "wonder",
+    "surprise",
+    "fun",
+    "joy",
+    "sense",
+    "value",
+    "longer",
+    "luck",
 }
 GENERIC_TARGETS = {"game", "games", "one", "thing", "things", "something", "anything", "it", ""}
 
@@ -388,3 +413,100 @@ def is_negated_wish(text: str) -> bool:
 QUANTITY_NOUNS = {"kind", "sort", "type", "bit", "lot", "couple", "piece", "variety"}
 LESS_WORDS = {"less", "fewer", "lesser"}
 CLAUSE_BREAKS = {"but", "however", "although", "though", "whereas"}
+
+
+# --- implicit demand: complaints about what a game lacks -------------------------------------
+NEG_HAVE_VERBS = {
+    "have",
+    "allow",
+    "let",
+    "support",
+    "offer",
+    "include",
+    "give",
+    "provide",
+    "contain",
+    "feature",
+}
+DESIGN_VERBS = {
+    "save",
+    "skip",
+    "pause",
+    "rebind",
+    "remap",
+    "customize",
+    "customise",
+    "adjust",
+    "disable",
+    "zoom",
+    "undo",
+    "resume",
+    "retry",
+    "reload",
+    "rotate",
+    "resize",
+}
+NEGATIVE_WORDS = {
+    "unplayable",
+    "impossible",
+    "unusable",
+    "painful",
+    "frustrating",
+    "unbearable",
+    "tedious",
+    "useless",
+    "pointless",
+    "miserable",
+    "slog",
+    "chore",
+    "grind",
+    "unenjoyable",
+}
+SCARCE_WORDS = {"little", "few", "no", "zero", "minimal", "barely"}
+
+# Map the many ways of saying the same missing thing onto one label so they cluster together.
+CANONICAL_NEEDS = [
+    (
+        re.compile(r"instruction|tutorial|guidance|explanation|walkthrough|\bwiki\b|onboard", re.I),
+        "in-game instructions",
+    ),
+    (re.compile(r"rebind|remap|keybind|key bind", re.I), "control rebinding"),
+    (re.compile(r"checkpoint|save point|auto.?save", re.I), "checkpoints"),
+    (re.compile(r"restart", re.I), "fast restart"),
+    (re.compile(r"\bqol\b|quality.of.life", re.I), "quality-of-life features"),
+    (re.compile(r"difficulty (option|setting|mode)|easy mode|assist", re.I), "difficulty options"),
+]
+
+
+def canonical_need(phrase: str) -> str:
+    for pat, name in CANONICAL_NEEDS:
+        if pat.search(phrase):
+            return name
+    return phrase
+
+
+UX_COMPLAINT = re.compile(
+    r"\b(hard|difficult|impossible|unclear|confusing) to "
+    r"(know|tell|figure out|understand|find out)\b"
+    r"|\bno (idea|clue) what (to do|(i'?m|you'?re) (supposed|meant) to do)\b"
+    r"|\bdoesn'?t (explain|tell you|teach)\b|\bnever (explain|tell|teach)s?\b",
+    re.I,
+)
+
+
+def ux_complaint(text: str) -> str | None:
+    """'very hard to know what you're supposed to do' -> the need behind it."""
+    return "in-game instructions" if UX_COMPLAINT.search(text) else None
+
+
+NOT_ENOUGH = re.compile(r"\bnot\s+enough\b|n't\s+enough\b", re.I)
+
+
+def has_not_enough(text: str) -> bool:
+    return bool(NOT_ENOUGH.search(text))
+
+
+def strip_markup(text: str) -> str:
+    """Steam BBCode removed and whitespace collapsed. Unlike normalize_text this keeps the
+    words as written ("co-op" stays "co-op"), which is what an LLM and quote checks want."""
+    return re.sub(r"\s+", " ", BBCODE.sub(" ", text or "")).strip()

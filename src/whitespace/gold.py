@@ -13,7 +13,7 @@ import csv
 import random
 from pathlib import Path
 
-from whitespace.extract.prefilter import is_candidate
+from whitespace.extract.prefilter import is_any_candidate
 from whitespace.storage import Database
 
 ITEM_FIELDS = [
@@ -27,6 +27,7 @@ ITEM_FIELDS = [
     "intensity",
     "confidence",
     "context_game",
+    "extractor_version",
     "post_excerpt",
 ]
 MISSED_FIELDS = ["post_id", "should_extract", "source", "text_excerpt"]
@@ -47,7 +48,8 @@ def parse_label(value: str | None) -> bool | None:
 def sample_items(db: Database, n: int, seed: int = 42) -> list[dict]:
     rows = db.conn.execute(
         "SELECT w.id, w.quote, w.want_summary, w.request_type, w.subject, w.scope, w.intensity, "
-        "w.confidence, c.name AS game, substr(p.text, 1, 300) AS excerpt "
+        "w.confidence, w.extractor_version AS ver, c.name AS game, "
+        "substr(p.text, 1, 300) AS excerpt "
         "FROM want_item w JOIN post p ON p.id = w.post_id "
         "LEFT JOIN catalog_game c ON c.appid = w.context_appid ORDER BY w.id"
     ).fetchall()
@@ -64,6 +66,7 @@ def sample_items(db: Database, n: int, seed: int = 42) -> list[dict]:
             "intensity": r["intensity"],
             "confidence": r["confidence"],
             "context_game": r["game"] or "",
+            "extractor_version": r["ver"] or "",
             "post_excerpt": (r["excerpt"] or "").replace("\n", " "),
         }
         for r in chosen
@@ -77,7 +80,7 @@ def sample_missed(db: Database, n: int, seed: int = 42) -> list[dict]:
         "WHERE w.id IS NULL AND json_extract(p.flags,'$.is_dup') = 0 "
         "AND json_extract(p.flags,'$.is_low_effort') = 0 ORDER BY p.id"
     ).fetchall()
-    candidates = [r for r in rows if is_candidate(r["text"] or "")]
+    candidates = [r for r in rows if is_any_candidate(r["text"] or "")]
     chosen = random.Random(seed).sample(candidates, min(n, len(candidates)))
     return [
         {
@@ -136,6 +139,7 @@ def score_items(rows: list[dict], conf_threshold: float = 0.6) -> dict:
         "by_request_type": _group(labeled, "request_type"),
         "by_subject": _group(labeled, "subject"),
         "by_scope": _group(labeled, "scope"),
+        "by_extractor": _group(labeled, "extractor_version"),
         f"confidence>={conf_threshold}": _precision(hi, "correct"),
         f"confidence<{conf_threshold}": _precision(lo, "correct"),
     }
@@ -163,7 +167,7 @@ def sample_untriggered(db: Database, n: int, seed: int = 42) -> list[dict]:
         "WHERE w.id IS NULL AND json_extract(p.flags,'$.is_dup') = 0 "
         "AND json_extract(p.flags,'$.is_low_effort') = 0 ORDER BY p.id"
     ).fetchall()
-    others = [r for r in rows if not is_candidate(r["text"] or "")]
+    others = [r for r in rows if not is_any_candidate(r["text"] or "")]
     chosen = random.Random(seed).sample(others, min(n, len(others)))
     return [
         {

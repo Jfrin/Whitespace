@@ -12,10 +12,10 @@ from dataclasses import dataclass
 
 from whitespace.extract import rules
 from whitespace.extract.appid import AppIndex
-from whitespace.extract.prefilter import find_trigger
+from whitespace.extract.prefilter import find_trigger, has_lack_cue
 from whitespace.extract.schema import WantItem
 
-EXTRACTOR_VERSION = "rules-v1"
+EXTRACTOR_VERSION = "rules-v2"
 MODEL = "en_core_web_sm"
 PEOPLE = {
     "friend",
@@ -124,6 +124,8 @@ def _marker_features(sent) -> tuple[list[_Feature], set[int]]:
                     covered.update(t.i for t in h.subtree)
                     if rules.is_junk_feature(h.lemma_):
                         continue
+                    if any(c.lower_ in rules.SCARCE_WORDS for c in h.children):
+                        continue  # 'with little content' is a lack, not a wanted feature
                     phrase = _phrase(h)
                     if phrase:
                         feats.append(_Feature(low, phrase))
@@ -179,6 +181,116 @@ def _clause_end(sent, after: int) -> int:
     )
 
 
+def _good_noun(tok) -> bool:
+    """A noun worth reporting as something missing."""
+    return tok.pos_ == "NOUN" and not _is_people(tok) and not rules.is_junk_feature(tok.lemma_)
+
+
+def _lacks_no(sent) -> list[str]:
+    """'no fast restarts' / 'no way to rebind controls'."""
+    out: list[str] = []
+    for tok in sent:
+        if tok.lower_ != "no" or tok.dep_ != "det" or tok.head.pos_ != "NOUN":
+            continue
+        head = tok.head
+        if head.lemma_.lower() in {"way", "option", "ability"}:
+            for c in head.children:  # 'no way to VERB OBJ' -> 'VERB OBJ'
+                if c.dep_ in {"acl", "relcl"} and c.pos_ == "VERB":
+                    out += _verb_object(c)
+            continue
+        out += [_phrase(h) for h in (head, *head.conjuncts) if _good_noun(h)]
+    return out
+
+
+def _verb_object(verb) -> list[str]:
+    """'skip the dialogue' -> ['skip dialogue']; a bare design verb ('save') -> ['save']."""
+    lemma = verb.lemma_.lower()
+    objs = [c for c in verb.children if c.dep_ == "dobj"]
+    heads = [h for o in objs for h in (o, *o.conjuncts) if _good_noun(h)]
+    if heads:
+        return [f"{lemma} {_phrase(h)}" for h in heads]
+    return [lemma] if lemma in rules.DESIGN_VERBS else []
+
+
+def _lacks_verbs(sent) -> list[str]:
+    """'lacks X', 'lack of X', 'is missing X', 'X is missing'."""
+    out: list[str] = []
+    for tok in sent:
+        if tok.lower_ not in {"lack", "lacks", "lacked", "lacking", "missing"}:
+            continue
+        objs = [c for c in tok.children if c.dep_ == "dobj"]
+        for c in tok.children:
+            if c.dep_ == "prep" and c.lower_ in {"of", "in"}:
+                objs += [p for p in c.children if p.dep_ == "pobj"]
+        if tok.lower_ == "missing":
+            holder = tok.head if tok.dep_ in {"acomp", "attr"} else tok
+            objs += [c for c in holder.children if c.dep_ in {"nsubj", "nsubjpass"}]
+        out += [_phrase(h) for o in objs for h in (o, *o.conjuncts) if _good_noun(h)]
+    return out
+
+
+def _lacks_negated(sent) -> list[str]:
+    """ "can't skip the dialogue", "doesn't have a map", "doesn't let me use the axe"."""
+    out: list[str] = []
+    for tok in sent:
+        if tok.pos_ not in {"VERB", "AUX"}:
+            continue
+        kids = list(tok.children)
+        if not any(c.dep_ == "neg" for c in kids):
+            continue
+        lemma = tok.lemma_.lower()
+        if any(c.lemma_.lower() in {"can", "could"} for c in kids):
+            out += _verb_object(tok)
+        elif lemma in rules.NEG_HAVE_VERBS:
+            for c in kids:
+                if c.dep_ == "dobj":
+                    out += [_phrase(h) for h in (c, *c.conjuncts) if _good_noun(h)]
+                elif c.dep_ == "xcomp" and c.pos_ == "VERB":
+                    out += _verb_object(c)
+        elif lemma in rules.DESIGN_VERBS:
+            out.append(lemma)
+    return out
+
+
+def _lacks_without(sent) -> list[str]:
+    """'unplayable without the wiki', 'without QoL mods this is a slog'."""
+    if not any(t.lower_ in rules.NEGATIVE_WORDS for t in sent):
+        return []
+    out: list[str] = []
+    for tok in sent:
+        if tok.lower_ != "without":
+            continue
+        obj = next((c for c in tok.children if c.dep_ == "pobj"), None)
+        if obj is None:
+            obj = next(
+                (t for t in sent[tok.i - sent.start + 1 :][:4] if t.pos_ in {"NOUN", "PROPN"}), None
+            )
+        if obj is not None:
+            out += [
+                _phrase(h)
+                for h in (obj, *obj.conjuncts)
+                if h.pos_ in {"NOUN", "PROPN"}
+                and not _is_people(h)
+                and not rules.is_junk_feature(h.lemma_)
+            ]
+    return out
+
+
+def _lacks_scarce(sent) -> list[str]:
+    """'not enough content', 'very little content' -> 'more content'."""
+    out: list[str] = []
+    not_enough = rules.has_not_enough(sent.text)
+    for tok in sent:
+        prev = sent.doc[tok.i - 1].lower_ if tok.i > sent.start else ""
+        scarce = tok.lower_ in {"little", "few"} and prev not in {"a", "quite", "only"}
+        if not (scarce or (tok.lower_ == "enough" and not_enough)):
+            continue
+        head = tok.head
+        if tok.dep_ in {"amod", "det", "advmod", "nummod", "quantmod"} and _good_noun(head):
+            out.append(f"more {_phrase(head)}")
+    return out
+
+
 class RuleExtractor:
     """text -> list[WantItem], deterministic."""
 
@@ -193,7 +305,7 @@ class RuleExtractor:
         out: list[WantItem] = []
         seen: set[str] = set()
         for sent in doc.sents:
-            for item in self._sentence(sent):
+            for item in self._sentence(sent) or self._complaints(sent):
                 if item.want_summary not in seen:
                     seen.add(item.want_summary)
                     out.append(item)
@@ -272,8 +384,6 @@ class RuleExtractor:
                 return []
             req = "genre_request"
         negated = bool(base) and not is_like and rules.is_negated_wish(sent.text)
-        if negated:
-            req = "complaint"  # "I wish this wasn't a roguelite": a thing they do NOT want
         ref = f"like {', '.join(names)}" if is_like and names else base
         stem = ref or base
 
@@ -323,3 +433,46 @@ class RuleExtractor:
                 )
                 make(stem_i, subj)
         return items
+
+    def _complaints(self, sent) -> list[WantItem]:
+        """Implicit demand: what players say the game lacks. One item per missing thing, in
+        positive form ("no fast restarts" -> "fast restart"), so it clusters with the wishes."""
+        if not has_lack_cue(sent.text):
+            return []
+        phrases = [
+            *_lacks_no(sent),
+            *_lacks_verbs(sent),
+            *_lacks_negated(sent),
+            *_lacks_without(sent),
+            *_lacks_scarce(sent),
+        ]
+        if ux := rules.ux_complaint(sent.text):
+            phrases.append(ux)
+        if not phrases:
+            return []
+        games = [e for e in sent.ents if e.label_ == "GAME"]
+        names = [e.text for e in games]
+        appids = sorted({int(e.ent_id_) for e in games if e.ent_id_})
+        intensity = rules.intensity_level(sent.text, self.sentiment(rules.neutralize(sent.text)))
+        quote = sent.text.strip()[:200]
+        out: list[WantItem] = []
+        seen: set[str] = set()
+        for phrase in phrases:
+            summary = rules.canonical_need(phrase)
+            if not summary or summary in seen:
+                continue
+            seen.add(summary)
+            subject = rules.classify_subject(summary)
+            out.append(
+                WantItem(
+                    request_type="complaint",
+                    subject=subject,
+                    want_summary=summary,
+                    intensity=intensity,
+                    quote=quote,
+                    confidence=rules.adjust_confidence(0.65, subject, "complaint"),
+                    referenced_games=list(names),
+                    referenced_appids=list(appids),
+                )
+            )
+        return out

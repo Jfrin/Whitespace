@@ -59,6 +59,9 @@ CREATE TABLE IF NOT EXISTS niche_score (
   demand REAL, dissatisfaction REAL, supply_pressure REAL, gap_score REAL,
   formula_version TEXT
 );
+CREATE TABLE IF NOT EXISTS llm_cache (
+  key TEXT PRIMARY KEY, model TEXT, response TEXT NOT NULL, created_at TEXT
+);
 """
 
 
@@ -196,6 +199,18 @@ class Database:
             "SELECT genres FROM catalog_game WHERE appid=?", (appid,)
         ).fetchone()
         return json.loads(row["genres"]) if row and row["genres"] else []
+
+    # llm cache ----------------------------------------------------------
+    def llm_cache_get(self, key: str) -> str | None:
+        row = self.conn.execute("SELECT response FROM llm_cache WHERE key=?", (key,)).fetchone()
+        return row["response"] if row else None
+
+    def llm_cache_put(self, key: str, model: str, response: str) -> None:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO llm_cache(key, model, response, created_at) VALUES (?,?,?,?)",
+            (key, model, response, now_iso()),
+        )
+        self.conn.commit()
 
     def count(self, table: str) -> int:
         assert re.fullmatch(r"[a-z_]+", table)

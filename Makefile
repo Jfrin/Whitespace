@@ -1,44 +1,84 @@
-.PHONY: gold-export gold-score build test lint fmt shell stats ingest clean-posts extract catalog context dashboard
-RUN = docker compose run --rm
+# Whitespace shortcuts. Run `make help`.
+# Recipes start with ">" instead of a tab (.RECIPEPREFIX), so this survives copy-paste.
+.RECIPEPREFIX = >
+.DEFAULT_GOAL := help
 
-build:        ## build all images
-	docker compose --profile dev --profile pipeline --profile dashboard build
+RUN    := docker compose run --rm
+SOURCE ?= steam_reviews
+KIND   ?= items
+N      ?= 300
+LIMIT  ?=
 
-test:         ## run pytest (with coverage) in Docker
-	$(RUN) test
+.PHONY: help build build-app test lint fmt shell ingest clean-posts extract extract-rules redo \
+        catalog context refresh stats gemini-models gold-export gold-score pipeline dashboard
 
-lint:         ## ruff check + format check
-	$(RUN) lint
+help:
+> @echo Dev:       make build / test / lint / fmt / shell
+> @echo Pipeline:  make ingest [SOURCE=steam_reviews] / clean-posts / extract [LIMIT=100]
+> @echo            make catalog / context / stats / pipeline (runs all of the above in order)
+> @echo Redo:      make redo [LIMIT=100] (re-extract all) / refresh (recompute context)
+> @echo            make extract-rules (offline spaCy, replaces existing wants)
+> @echo Gemini:    make gemini-models
+> @echo Gold set:  make gold-export [KIND=items/missed/untriggered N=300] / gold-score [KIND=...]
+> @echo Dashboard: make dashboard
 
-fmt:          ## auto-fix lint + format
-	$(RUN) fmt
+# --- build / dev ---------------------------------------------------------------------------
+build:
+> docker compose --profile dev --profile pipeline --profile dashboard build
 
-shell:        ## shell in the dev image
-	$(RUN) --entrypoint sh test
+build-app:
+> docker compose --profile pipeline build app
 
-stats:
-	$(RUN) app stats
+test:
+> $(RUN) test
 
-ingest:       ## make ingest SOURCE=steam_reviews
-	$(RUN) app ingest $(SOURCE)
+lint:
+> $(RUN) lint
 
-clean-posts:
-	$(RUN) app clean
+fmt:
+> $(RUN) fmt
 
-extract:      ## spaCy rule extraction, no API keys
-	$(RUN) app extract --limit 200
+shell:
+> $(RUN) --entrypoint sh test
 
-catalog:      ## fetch genres for referenced games
-	$(RUN) app catalog
+# --- pipeline (each rebuilds the app image first, because `docker compose run` does not) ---
+ingest: build-app
+> $(RUN) app ingest $(SOURCE)
 
-context:      ## attach game/genre/scope to wants
-	$(RUN) app context
+clean-posts: build-app
+> $(RUN) app clean
 
-gold-export:   ## sample wants to label by hand -> data/gold_items.csv
-	$(RUN) app gold-export
+extract: build-app
+> $(RUN) app extract $(if $(LIMIT),--limit $(LIMIT),)
 
-gold-score:    ## precision from the labeled CSV
-	$(RUN) app gold-score
+redo: build-app
+> $(RUN) app extract --redo $(if $(LIMIT),--limit $(LIMIT),)
 
-dashboard:    ## http://localhost:8501
-	docker compose --profile dashboard up --build dashboard
+extract-rules: build-app
+> $(RUN) app extract --extractor rules --redo
+
+catalog: build-app
+> $(RUN) app catalog
+
+context: build-app
+> $(RUN) app context
+
+refresh: build-app
+> $(RUN) app context --refresh
+
+stats: build-app
+> $(RUN) app stats
+
+gemini-models: build-app
+> $(RUN) app gemini-models
+
+gold-export: build-app
+> $(RUN) app gold-export --kind $(KIND) --n $(N)
+
+gold-score: build-app
+> $(RUN) app gold-score --kind $(KIND)
+
+pipeline: ingest clean-posts extract catalog context stats
+
+dashboard:
+> docker compose --profile dashboard up --build dashboard
