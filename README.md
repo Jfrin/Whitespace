@@ -14,7 +14,7 @@ are written and waiting on your first run. Cluster, score, and the dashboard con
 yet. See `PLAN.md` for the full checklist.
 
 ## Quick start (Docker)
-
+powershell
 ```powershell
 copy .env.example .env      # set WHITESPACE_CONTACT=you@example.com
 docker compose --profile dev build
@@ -28,7 +28,36 @@ docker compose run --rm app catalog     # genres for every game wants refer to
 docker compose run --rm app context     # scope + game + genres on every want
 docker compose run --rm app stats
 ```
+make commands
+```
+make help  #list all commands
+# dev commands
+make build
+make test
+make lint
+make fmt
+make shell
 
+# pipeline commands
+make ingest [SOURCE=sourcehere]
+make ingest clean-posts
+make ingest extract [LIMIT=numberhere]
+
+make redo [LIMIT=numberhere] # re-extract all
+make redo refresh # recompute context
+
+make extract-rules #offline spaCy, replaces existing wants
+
+# gemini shit
+make Gemini
+make gold-export [Kind=typehere N=numberhere]
+make gold-score [Kind=typehere N=numberhere]
+#types are items, missed, untrigged
+
+# dashboard
+make dashboard 
+
+``` 
 Data lands in `./data/whitespace.sqlite` (raw responses in `./data/raw/`), both gitignored.
 If you have `make`, `make build | test | lint | ingest SOURCE=... | extract | stats | dashboard`
 wrap the same commands.
