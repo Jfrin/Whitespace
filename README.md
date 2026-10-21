@@ -108,7 +108,12 @@ docker compose run --rm app extract --extractor rules      # offline spaCy fallb
 
 How it behaves:
 
-- **Model:** `gemini-2.5-flash-lite` by default (listed with a free tier). Override with
+- **Batching:** by default 8 posts go in one request (`--batch-size`, `GEMINI_BATCH_SIZE`; 1 turns it
+  off), so ~1,200 English posts need ~150 requests instead of ~1,200. At the default 10 requests/min
+  that is roughly 15 minutes. Results are cached per post, so batched and single runs share the cache.
+- **Progress:** the run prints the post count up front and a line per batch. Ctrl+C is safe: finished
+  batches are saved and cached responses make the re-run cheap.
+- **Model:** `gemini-3.5-flash-lite` by default (the `gemini-2.5-*` models stopped working on at least one free key). Override with
   `GEMINI_MODEL` or `--model`. Exact free quotas per model are shown in AI Studio for your project;
   set `GEMINI_RPM` (default 10) to match.
 - **Free-tier quota:** a per-minute 429 is waited out; a **daily** 429 stops the run cleanly

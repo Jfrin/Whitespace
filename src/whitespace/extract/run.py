@@ -23,7 +23,8 @@ def extract_all(
 ) -> dict[str, int]:
     """`redo` deletes every want_item first (posts are untouched) so new rules re-run on all.
     `prefilter`: "cue" skips posts with no wish trigger or lack cue; "all" sends every English
-    post (for an LLM, which can find implicit demand the regexes can't)."""
+    post (for an LLM, which can find implicit demand the regexes can't).
+    If the extractor has `extract_batch` and `batch_size > 1`, posts are sent in groups."""
     if redo:
         db.conn.execute("DELETE FROM want_item")
         db.conn.commit()
@@ -34,6 +35,7 @@ def extract_all(
         "AND json_extract(p.flags,'$.is_low_effort') = 0"
     ).fetchall()
     stats = {"scanned": 0, "candidates": 0, "items": 0, "non_english": 0}
+    work = []
     for row in rows:
         stats["scanned"] += 1
         if not is_english(row["lang"]):
@@ -41,35 +43,56 @@ def extract_all(
             continue
         if prefilter != "all" and not is_any_candidate(row["text"] or ""):
             continue
-        try:
-            found = extractor(row["text"])
-        except ExtractorStop as exc:
-            stats["stopped"] = 1
-            print(f"stopped early: {exc}", file=sys.stderr)
-            break
-        stats["candidates"] += 1
-        for it in found:
-            db.conn.execute(
-                "INSERT OR IGNORE INTO want_item(post_id, request_type, subject, want_summary, "
-                "referenced_games, referenced_appids, intensity, quote, confidence, "
-                "extractor_version) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                (
-                    row["id"],
-                    it.request_type,
-                    it.subject,
-                    it.want_summary,
-                    json.dumps(it.referenced_games),
-                    json.dumps(it.referenced_appids),
-                    it.intensity,
-                    it.quote,
-                    it.confidence,
-                    version,
-                ),
-            )
-            stats["items"] += 1
-        if stats["candidates"] % 25 == 0:
-            db.conn.commit()  # keep progress if the run is interrupted
-        if limit and stats["candidates"] >= limit:
-            break
-    db.conn.commit()
+        work.append(row)
+    if limit:
+        work = work[:limit]
+    batcher = getattr(extractor, "extract_batch", None)
+    size = int(getattr(extractor, "batch_size", 1) or 1) if batcher else 1
+    print(
+        f"{len(work)} posts to send ({stats['scanned']} scanned). "
+        "Ctrl+C is safe: progress and API responses are saved.",
+        file=sys.stderr,
+    )
+    try:
+        for start in range(0, len(work), size):
+            group = work[start : start + size]
+            try:
+                if batcher and size > 1:
+                    results = batcher([r["text"] or "" for r in group])
+                else:
+                    results = [extractor(r["text"]) for r in group]
+            except ExtractorStop as exc:
+                stats["stopped"] = 1
+                print(f"stopped early: {exc}", file=sys.stderr)
+                break
+            before = stats["candidates"]
+            for row, found in zip(group, results, strict=True):
+                stats["candidates"] += 1
+                for it in found:
+                    db.conn.execute(
+                        "INSERT OR IGNORE INTO want_item(post_id, request_type, subject, "
+                        "want_summary, referenced_games, referenced_appids, intensity, quote, "
+                        "confidence, extractor_version) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            row["id"],
+                            it.request_type,
+                            it.subject,
+                            it.want_summary,
+                            json.dumps(it.referenced_games),
+                            json.dumps(it.referenced_appids),
+                            it.intensity,
+                            it.quote,
+                            it.confidence,
+                            version,
+                        ),
+                    )
+                    stats["items"] += 1
+            db.conn.commit()
+            if stats["candidates"] // 10 != before // 10 or len(group) > 1:
+                print(
+                    f"  {stats['candidates']}/{len(work)} posts, {stats['items']} items",
+                    file=sys.stderr,
+                )
+    finally:
+        db.conn.commit()
     return stats

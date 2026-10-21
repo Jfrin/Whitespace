@@ -75,8 +75,16 @@ def cmd_extract(args: argparse.Namespace, settings: Settings) -> int:
 
         model = args.model or os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
         rpm = args.rpm or float(os.environ.get("GEMINI_RPM", "10"))
+        batch = args.batch_size or int(os.environ.get("GEMINI_BATCH_SIZE", "8"))
+        print(
+            f"gemini {model}: {rpm:g} requests/min, {batch} posts per request "
+            f"(~{60 / rpm:.0f}s between requests)",
+            file=sys.stderr,
+        )
         with httpx.Client(timeout=60.0) as client:
-            extractor = GeminiExtractor(db, key, model=model, client=client, rpm=rpm, index=index)
+            extractor = GeminiExtractor(
+                db, key, model=model, client=client, rpm=rpm, index=index, batch_size=batch
+            )
             stats = extract_all(
                 db, extractor, limit=args.limit, redo=args.redo, prefilter=args.prefilter or "all"
             )
@@ -198,6 +206,7 @@ def main(argv: list[str] | None = None) -> int:
     ext.add_argument("--extractor", choices=["gemini", "rules"], default=None)
     ext.add_argument("--model", default=None, help="Gemini model id (default: GEMINI_MODEL)")
     ext.add_argument("--rpm", type=float, default=None, help="requests/min (default: GEMINI_RPM)")
+    ext.add_argument("--batch-size", type=int, default=None, help="posts per request (1 = off)")
     ext.add_argument("--prefilter", choices=["cue", "all"], default=None)
     ext.add_argument("--games", default="config/games.yaml")
     ext.add_argument("--limit", type=int, default=None)
