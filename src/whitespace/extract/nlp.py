@@ -287,7 +287,9 @@ def _lacks_scarce(sent) -> list[str]:
             continue
         head = tok.head
         if tok.dep_ in {"amod", "det", "advmod", "nummod", "quantmod"} and _good_noun(head):
-            out.append(f"more {_phrase(head)}")
+            phrase = " ".join(w for w in _phrase(head).split() if w != tok.lower_)
+            if phrase:
+                out.append(f"more {phrase}")
     return out
 
 
@@ -362,7 +364,7 @@ class RuleExtractor:
         ent_tokens = {t.i for e in games for t in e}
         if like_obj is not None:
             # "games like A or B": every compared game, not just the first
-            for head in [like_obj, *like_obj.conjuncts]:
+            for head in [like_obj, *(t for t in like_obj.subtree if t.dep_ == "conj")]:
                 if head.i in ent_tokens or head.pos_ not in {"NOUN", "PROPN"}:
                     continue
                 if rules.is_junk_feature(head.lemma_):

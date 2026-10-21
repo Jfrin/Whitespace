@@ -14,7 +14,7 @@ are written and waiting on your first run. Cluster, score, and the dashboard con
 yet. See `PLAN.md` for the full checklist.
 
 ## Quick start (Docker)
-powershell
+
 ```powershell
 copy .env.example .env      # set WHITESPACE_CONTACT=you@example.com
 docker compose --profile dev build
@@ -28,36 +28,7 @@ docker compose run --rm app catalog     # genres for every game wants refer to
 docker compose run --rm app context     # scope + game + genres on every want
 docker compose run --rm app stats
 ```
-make commands
-```
-make help  #list all commands
-# dev commands
-make build
-make test
-make lint
-make fmt
-make shell
 
-# pipeline commands
-make ingest [SOURCE=sourcehere]
-make ingest clean-posts
-make ingest extract [LIMIT=numberhere]
-
-make redo [LIMIT=numberhere] # re-extract all
-make redo refresh # recompute context
-
-make extract-rules #offline spaCy, replaces existing wants
-
-# gemini shit
-make Gemini
-make gold-export [Kind=typehere N=numberhere]
-make gold-score [Kind=typehere N=numberhere]
-#types are items, missed, untrigged
-
-# dashboard
-make dashboard 
-
-``` 
 Data lands in `./data/whitespace.sqlite` (raw responses in `./data/raw/`), both gitignored.
 If you have `make`, `make build | test | lint | ingest SOURCE=... | extract | stats | dashboard`
 wrap the same commands.
@@ -137,7 +108,12 @@ docker compose run --rm app extract --extractor rules      # offline spaCy fallb
 
 How it behaves:
 
-- **Model:** `gemini-2.5-flash-lite` by default (listed with a free tier). Override with
+- **Batching:** by default 8 posts go in one request (`--batch-size`, `GEMINI_BATCH_SIZE`; 1 turns it
+  off), so ~1,200 English posts need ~150 requests instead of ~1,200. At the default 10 requests/min
+  that is roughly 15 minutes. Results are cached per post, so batched and single runs share the cache.
+- **Progress:** the run prints the post count up front and a line per batch. Ctrl+C is safe: finished
+  batches are saved and cached responses make the re-run cheap.
+- **Model:** `gemini-3.5-flash-lite` by default (the `gemini-2.5-*` models stopped working on at least one free key). Override with
   `GEMINI_MODEL` or `--model`. Exact free quotas per model are shown in AI Studio for your project;
   set `GEMINI_RPM` (default 10) to match.
 - **Free-tier quota:** a per-minute 429 is waited out; a **daily** 429 stops the run cleanly

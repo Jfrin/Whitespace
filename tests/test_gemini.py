@@ -207,7 +207,7 @@ class FakeLLM:
 
 def _posts(db, n):
     for i in range(n):
-        db.upsert_post(Post("s", str(i), "u", f"plain review number {i} with no trigger words", i))
+        db.upsert_post(Post("s", str(i), "u", f"plain review number {i} with nothing special", i))
     for r in db.conn.execute("SELECT id FROM post").fetchall():
         db.set_flags(r["id"], "en", {"is_dup": False, "is_low_effort": False})
 
@@ -245,3 +245,127 @@ def test_cli_extract_without_a_key_explains_itself(monkeypatch, tmp_path, capsys
     assert main(["extract", "--extractor", "gemini"]) == 2
     assert "aistudio.google.com" in capsys.readouterr().err
     assert main(["gemini-models"]) == 2
+
+
+TEXT_B = "The game has no map. I would love a minimap, honestly."
+ITEM_B = {
+    "request_type": "feature_wish",
+    "subject": "ux",
+    "want_summary": "minimap",
+    "intensity": 2,
+    "quote": "I would love a minimap",
+    "confidence": 0.8,
+    "referenced_games": [],
+}
+
+
+def batch_reply(per_id):
+    results = [{"id": k, "items": v} for k, v in per_id.items()]
+    return {"candidates": [{"content": {"parts": [{"text": json.dumps({"results": results})}]}}]}
+
+
+def sent_ids(req):
+    text = json.loads(req.content)["contents"][0]["parts"][0]["text"]
+    return [p["id"] for p in json.loads(text)["posts"]]
+
+
+def test_batch_sends_several_posts_in_one_request_and_caches_each(db):
+    seen = []
+
+    def handler(req):
+        seen.append(json.loads(req.content))
+        return httpx.Response(200, json=batch_reply({0: [ITEM], 1: [ITEM_B]}))
+
+    ex, _ = make(db, handler)
+    [a, b] = ex.extract_batch([TEXT, TEXT_B])
+    assert a[0].want_summary == "checkpoints" and b[0].want_summary == "minimap"
+    assert len(seen) == 1
+    assert "results" in seen[0]["generationConfig"]["responseJsonSchema"]["properties"]
+    assert "BATCH MODE" in seen[0]["systemInstruction"]["parts"][0]["text"]
+    assert len(ex(TEXT)) == 1 and len(seen) == 1  # single-post call hits the cache
+
+
+def test_batches_respect_batch_size(db):
+    calls = []
+
+    def handler(req):
+        ids = sent_ids(req)
+        calls.append(ids)
+        return httpx.Response(200, json=batch_reply({k: [] for k in ids}))
+
+    ex, _ = make(db, handler, batch_size=2)
+    ex.extract_batch([f"post number {i} has some words in it" for i in range(5)])
+    assert calls == [[0, 1], [0, 1], [0]]
+
+
+def test_batches_respect_the_character_budget(db):
+    calls = []
+
+    def handler(req):
+        ids = sent_ids(req)
+        calls.append(ids)
+        return httpx.Response(200, json=batch_reply({k: [] for k in ids}))
+
+    ex, _ = make(db, handler, batch_size=10, batch_chars=100)
+    ex.extract_batch([("word " * 15) + str(i) for i in range(4)])  # ~77 chars each
+    assert calls == [[0], [0], [0], [0]]
+
+
+def test_a_quote_from_another_post_is_rejected(db):
+    ex, _ = make(db, lambda req: httpx.Response(200, json=batch_reply({0: [ITEM_B], 1: [ITEM_B]})))
+    [a, b] = ex.extract_batch([TEXT, TEXT_B])
+    assert a == [] and len(b) == 1 and ex.stats["bad_quote"] == 1
+
+
+def test_posts_missing_from_the_response_are_retried_next_time(db):
+    calls = []
+
+    def handler(req):
+        ids = sent_ids(req)
+        calls.append(ids)
+        return httpx.Response(200, json=batch_reply({0: [ITEM]}))  # id 1 never answered
+
+    ex, _ = make(db, handler)
+    [a, b] = ex.extract_batch([TEXT, TEXT_B])
+    assert len(a) == 1 and b == [] and ex.stats["missing"] == 1
+    ex.extract_batch([TEXT, TEXT_B])  # A is cached, only B again
+    assert calls == [[0, 1], [0]]
+
+
+def test_unparseable_batch_falls_back_to_one_request_per_post(db):
+    answers = iter(
+        [
+            httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": "oops"}]}}]}),
+            httpx.Response(200, json=reply([ITEM])),
+            httpx.Response(200, json=reply([ITEM_B])),
+        ]
+    )
+    ex, _ = make(db, lambda req: next(answers))
+    [a, b] = ex.extract_batch([TEXT, TEXT_B])
+    assert a[0].want_summary == "checkpoints" and b[0].want_summary == "minimap"
+    assert ex.stats["bad_json"] >= 1
+
+
+class FakeBatcher:
+    batch_size = 3
+
+    def __init__(self):
+        self.sizes = []
+
+    def __call__(self, text):
+        raise AssertionError("single calls should not be used when batching")
+
+    def extract_batch(self, texts):
+        self.sizes.append(len(texts))
+        if len(self.sizes) == 2:
+            raise ExtractorStop("quota")
+        return [[WantItem("feature_wish", "mechanic", "x", 2, "q", 0.8)] for _ in texts]
+
+
+def test_extract_all_sends_groups_and_keeps_finished_groups_when_stopped(db):
+    _posts(db, 7)
+    ex = FakeBatcher()
+    stats = extract_all(db, ex, prefilter="all")
+    assert ex.sizes == [3, 3]
+    assert stats["stopped"] == 1 and stats["candidates"] == 3 and stats["items"] == 3
+    assert db.count("want_item") == 3

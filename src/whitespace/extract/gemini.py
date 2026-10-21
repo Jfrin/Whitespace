@@ -28,7 +28,7 @@ from whitespace.storage import Database
 
 PROMPT_VERSION = "gemini-v1"
 BASE = "https://generativelanguage.googleapis.com/v1beta"
-DEFAULT_MODEL = "gemini-2.5-flash-lite"  # listed with a free tier; override with GEMINI_MODEL
+DEFAULT_MODEL = "gemini-3.5-flash-lite"  # override with GEMINI_MODEL (see `gemini-models`)
 MAX_CHARS = 3000
 
 SYSTEM = """You extract unmet player demand from ONE video-game review or forum post.
@@ -66,20 +66,38 @@ _ITEM_PROPS = {
     "confidence": {"type": "number"},
     "referenced_games": {"type": "array", "items": {"type": "string"}},
 }
+_ITEM_SCHEMA = {
+    "type": "object",
+    "properties": _ITEM_PROPS,
+    "required": list(_ITEM_PROPS),
+}
 SCHEMA = {
     "type": "object",
+    "properties": {"items": {"type": "array", "items": _ITEM_SCHEMA}},
+    "required": ["items"],
+}
+BATCH_SCHEMA = {
+    "type": "object",
     "properties": {
-        "items": {
+        "results": {
             "type": "array",
             "items": {
                 "type": "object",
-                "properties": _ITEM_PROPS,
-                "required": list(_ITEM_PROPS),
+                "properties": {
+                    "id": {"type": "integer"},
+                    "items": {"type": "array", "items": _ITEM_SCHEMA},
+                },
+                "required": ["id", "items"],
             },
         }
     },
-    "required": ["items"],
+    "required": ["results"],
 }
+BATCH_EXTRA = """
+
+BATCH MODE: the user message is JSON {"posts": [{"id": <int>, "text": <string>}, ...]}.
+Return {"results": [{"id": <the post's id>, "items": [...]}, ...]}: exactly one result per post,
+same item rules. Judge every post on its own; an item's quote must come from that same post."""
 
 _PUNCT = str.maketrans({"\u2019": "'", "\u2018": "'", "\u201c": '"', "\u201d": '"'})
 
@@ -128,15 +146,18 @@ class GeminiExtractor:
         index: AppIndex | None = None,
         sleep: Callable[[float], None] = time.sleep,
         max_retries: int = 2,
+        batch_size: int = 8,
+        batch_chars: int = 9000,
     ) -> None:
         self.db, self.api_key, self.model = db, api_key, model
         self.client = client or httpx.Client(timeout=60.0)
         self.index, self.sleep, self.max_retries = index, sleep, max_retries
         self.limiter = RateLimiter(60.0 / rpm if rpm else 0.0, sleep=sleep)
         self.version = f"{PROMPT_VERSION}:{model}"
+        self.batch_size, self.batch_chars = batch_size, batch_chars
         self.stats = {
             "calls": 0, "cache_hits": 0, "retries": 0, "items": 0,
-            "invalid": 0, "bad_quote": 0, "bad_json": 0,
+            "invalid": 0, "bad_quote": 0, "bad_json": 0, "missing": 0,
         }  # fmt: skip
 
     # ------------------------------------------------------------------ public
@@ -144,10 +165,10 @@ class GeminiExtractor:
         cleaned = rules.strip_markup(text)[:MAX_CHARS]
         if not cleaned:
             return []
-        key = hashlib.sha1(f"{PROMPT_VERSION}|{self.model}|{cleaned}".encode()).hexdigest()
+        key = self._key(cleaned)
         raw = self.db.llm_cache_get(key)
         if raw is None:
-            raw = self._generate(cleaned)
+            raw = self._generate(self._body(cleaned))
             try:
                 json.loads(raw)
             except ValueError:
@@ -160,23 +181,31 @@ class GeminiExtractor:
         return self._items(json.loads(raw), cleaned)
 
     # ----------------------------------------------------------------- internals
-    def _body(self, cleaned: str) -> dict:
+    def _key(self, cleaned: str) -> str:
+        return hashlib.sha1(f"{PROMPT_VERSION}|{self.model}|{cleaned}".encode()).hexdigest()
+
+    def _body(
+        self,
+        content: str,
+        system: str = SYSTEM,
+        schema: dict | None = None,
+        max_tokens: int = 1500,
+    ) -> dict:
         return {
-            "systemInstruction": {"parts": [{"text": SYSTEM}]},
-            "contents": [{"role": "user", "parts": [{"text": cleaned}]}],
+            "systemInstruction": {"parts": [{"text": system}]},
+            "contents": [{"role": "user", "parts": [{"text": content}]}],
             "generationConfig": {
                 "temperature": 0,
-                "maxOutputTokens": 1500,
+                "maxOutputTokens": max_tokens,
                 "responseMimeType": "application/json",
-                "responseJsonSchema": SCHEMA,
+                "responseJsonSchema": schema or SCHEMA,
             },
         }
 
-    def _generate(self, cleaned: str) -> str:
+    def _generate(self, body: dict) -> str:
         """One API call (with retries). Returns the model's JSON text."""
         url = f"{BASE}/models/{self.model}:generateContent"
         headers = {"x-goog-api-key": self.api_key, "Content-Type": "application/json"}
-        body = self._body(cleaned)
         last = ""
         for attempt in range(self.max_retries + 1):
             self.limiter.wait()
@@ -239,6 +268,68 @@ class GeminiExtractor:
             out.append(replace(item, referenced_appids=appids))
         self.stats["items"] += len(out)
         return out
+
+    # ------------------------------------------------------------------ batching
+    def extract_batch(self, texts: list[str]) -> list[list[WantItem]]:
+        """Several posts per request: far fewer calls on a small free quota. Results are cached
+        per post, so single-post and batched runs share the cache."""
+        cleaned = [rules.strip_markup(t)[:MAX_CHARS] for t in texts]
+        results: list[list[WantItem] | None] = [None] * len(texts)
+        todo: list[int] = []
+        for i, c in enumerate(cleaned):
+            if not c:
+                results[i] = []
+                continue
+            raw = self.db.llm_cache_get(self._key(c))
+            if raw is None:
+                todo.append(i)
+            else:
+                self.stats["cache_hits"] += 1
+                results[i] = self._items(json.loads(raw), c)
+        for chunk in self._chunks(todo, cleaned):
+            self._run_chunk(chunk, cleaned, results)
+        return [r if r is not None else [] for r in results]
+
+    def _chunks(self, todo: list[int], cleaned: list[str]):
+        chunk: list[int] = []
+        size = 0
+        for i in todo:
+            n = len(cleaned[i])
+            if chunk and (len(chunk) >= self.batch_size or size + n > self.batch_chars):
+                yield chunk
+                chunk, size = [], 0
+            chunk.append(i)
+            size += n
+        if chunk:
+            yield chunk
+
+    def _run_chunk(self, chunk: list[int], cleaned: list[str], results: list) -> None:
+        posts = [{"id": k, "text": cleaned[i]} for k, i in enumerate(chunk)]
+        body = self._body(
+            json.dumps({"posts": posts}, ensure_ascii=False),
+            system=SYSTEM + BATCH_EXTRA,
+            schema=BATCH_SCHEMA,
+            max_tokens=4000,
+        )
+        raw = self._generate(body)
+        try:
+            rows = json.loads(raw)["results"]
+            by_id = {int(r["id"]): r.get("items") for r in rows}
+        except (ValueError, KeyError, TypeError, AttributeError):
+            self.stats["bad_json"] += 1
+            for i in chunk:  # fall back to one request per post
+                results[i] = self(cleaned[i])
+            return
+        self.stats["calls"] += 1
+        for k, i in enumerate(chunk):
+            items = by_id.get(k)
+            if not isinstance(items, list):
+                self.stats["missing"] += 1  # not cached, so the next run retries it
+                results[i] = []
+                continue
+            one = {"items": items}
+            self.db.llm_cache_put(self._key(cleaned[i]), self.model, json.dumps(one))
+            results[i] = self._items(one, cleaned[i])
 
 
 def list_models(api_key: str, client: httpx.Client) -> list[str]:
