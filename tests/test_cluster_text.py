@@ -20,7 +20,9 @@ def test_same_want_in_different_genres_embeds_differently():
 def test_load_cluster_inputs_reads_context_from_the_db(db, add_want):
     a = add_want("1", summary="faster progression")
     b = add_want("2", summary="photo mode")
-    db.conn.execute("UPDATE want_item SET context_genres=? WHERE id=?", (json.dumps(["RPG"]), a))
+    db.conn.execute(
+        "UPDATE want_item SET context_genres=? WHERE id=?", (json.dumps(["RPG"]), a)
+    )
     db.conn.commit()
     assert load_cluster_inputs(db) == [(a, "rpg: faster progression"), (b, "photo mode")]
 

@@ -139,7 +139,7 @@ def test_extract_all_redo_replaces_existing_wants(db):
         return [WantItem("feature_wish", "mechanic", "new summary", 2, "q", 0.8)]
 
     extract_all(db, old_rules)
-    assert extract_all(db, new_rules)["candidates"] == 0  # already extracted: skipped
+    assert extract_all(db, new_rules)["candidates"] == 0       # already extracted: skipped
     extract_all(db, new_rules, redo=True)
     rows = [r["want_summary"] for r in db.conn.execute("SELECT want_summary FROM want_item")]
     assert rows == ["new summary"]
@@ -189,4 +189,4 @@ def test_lack_cues_hit(text):
 def test_lack_cues_miss_plain_praise():
     assert not has_lack_cue("Great game, played for 200 hours and loved it")
     assert not is_any_candidate("I love the music and the art")
-    assert is_any_candidate("I wish it had co-op")  # wish triggers still count
+    assert is_any_candidate("I wish it had co-op")        # wish triggers still count

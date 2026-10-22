@@ -103,7 +103,7 @@ def test_responses_are_cached_across_calls_and_instances(db):
     ex, _ = make(db, handler)
     ex(TEXT)
     ex(TEXT)
-    ex2, _ = make(db, handler)  # new instance, same database
+    ex2, _ = make(db, handler)                      # new instance, same database
     assert len(ex2(TEXT)) == 1
     assert len(calls) == 1 and ex.stats["cache_hits"] == 1 and ex2.stats["cache_hits"] == 1
 
@@ -131,7 +131,7 @@ def test_server_errors_retry_then_stop(db):
     ex, _ = make(db, handler)
     with pytest.raises(ExtractorStop, match="giving up"):
         ex(TEXT)
-    assert len(calls) == 3  # first try + 2 retries
+    assert len(calls) == 3                          # first try + 2 retries
 
 
 def test_auth_and_unknown_model_errors_stop_immediately(db):
@@ -167,7 +167,7 @@ def test_unparseable_output_is_empty_and_not_cached(db):
     )
     ex, _ = make(db, lambda req: next(answers))
     assert ex(TEXT) == [] and ex.stats["bad_json"] == 1
-    assert len(ex(TEXT)) == 1  # retried because the failure wasn't cached
+    assert len(ex(TEXT)) == 1                       # retried because the failure wasn't cached
 
 
 def test_markup_is_stripped_before_sending_and_quotes_still_verify(db):
@@ -186,7 +186,7 @@ def test_markup_is_stripped_before_sending_and_quotes_still_verify(db):
 def test_quote_matching_is_forgiving_about_case_spacing_and_curly_quotes():
     text = "It doesn\u2019t have   a MAP.  Really."
     assert quote_in_text("it doesn't have a map", text)
-    assert quote_in_text('"it doesn\'t have a map..."', text)
+    assert quote_in_text("\"it doesn't have a map...\"", text)
     assert not quote_in_text("", text) and not quote_in_text("totally different", text)
 
 
@@ -282,7 +282,7 @@ def test_batch_sends_several_posts_in_one_request_and_caches_each(db):
     assert len(seen) == 1
     assert "results" in seen[0]["generationConfig"]["responseJsonSchema"]["properties"]
     assert "BATCH MODE" in seen[0]["systemInstruction"]["parts"][0]["text"]
-    assert len(ex(TEXT)) == 1 and len(seen) == 1  # single-post call hits the cache
+    assert len(ex(TEXT)) == 1 and len(seen) == 1            # single-post call hits the cache
 
 
 def test_batches_respect_batch_size(db):
@@ -307,7 +307,7 @@ def test_batches_respect_the_character_budget(db):
         return httpx.Response(200, json=batch_reply({k: [] for k in ids}))
 
     ex, _ = make(db, handler, batch_size=10, batch_chars=100)
-    ex.extract_batch([("word " * 15) + str(i) for i in range(4)])  # ~77 chars each
+    ex.extract_batch([("word " * 15) + str(i) for i in range(4)])     # ~77 chars each
     assert calls == [[0], [0], [0], [0]]
 
 
@@ -323,12 +323,12 @@ def test_posts_missing_from_the_response_are_retried_next_time(db):
     def handler(req):
         ids = sent_ids(req)
         calls.append(ids)
-        return httpx.Response(200, json=batch_reply({0: [ITEM]}))  # id 1 never answered
+        return httpx.Response(200, json=batch_reply({0: [ITEM]}))      # id 1 never answered
 
     ex, _ = make(db, handler)
     [a, b] = ex.extract_batch([TEXT, TEXT_B])
     assert len(a) == 1 and b == [] and ex.stats["missing"] == 1
-    ex.extract_batch([TEXT, TEXT_B])  # A is cached, only B again
+    ex.extract_batch([TEXT, TEXT_B])                                   # A is cached, only B again
     assert calls == [[0, 1], [0]]
 
 

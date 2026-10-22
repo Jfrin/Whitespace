@@ -93,7 +93,7 @@ def test_classify_scope(text, request_type, has_game, expected):
         ("ui scaling", "ux"),
         ("camera controls", "ux"),
         ("tooltips", "ux"),
-        ("hard mode", "difficulty"),  # earlier entries still win
+        ("hard mode", "difficulty"),          # earlier entries still win
         ("controller support", "platform"),
     ],
 )
@@ -132,16 +132,8 @@ def test_normalize_text_strips_steam_bbcode():
 
 @pytest.mark.parametrize(
     ("lang", "expected"),
-    [
-        (None, True),
-        ("", True),
-        ("en", True),
-        ("english", True),
-        ("English", True),
-        ("russian", False),
-        ("und", False),
-        ("schinese", False),
-    ],
+    [(None, True), ("", True), ("en", True), ("english", True), ("English", True),
+     ("russian", False), ("und", False), ("schinese", False)],
 )
 def test_is_english(lang, expected):
     assert rules.is_english(lang) is expected
@@ -155,7 +147,7 @@ def test_is_english(lang, expected):
         ("i wish i hadn't bought it", True),
         ("I wish it had co-op", False),
         ("I wish I could recommend it", False),
-        ("Why isn't there co-op, I wish", False),  # negation before the wish
+        ("Why isn't there co-op, I wish", False),          # negation before the wish
     ],
 )
 def test_is_negated_wish(text, expected):

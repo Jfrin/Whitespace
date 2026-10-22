@@ -230,7 +230,7 @@ def _lacks_verbs(sent) -> list[str]:
 
 
 def _lacks_negated(sent) -> list[str]:
-    """ "can't skip the dialogue", "doesn't have a map", "doesn't let me use the axe"."""
+    """"can't skip the dialogue", "doesn't have a map", "doesn't let me use the axe"."""
     out: list[str] = []
     for tok in sent:
         if tok.pos_ not in {"VERB", "AUX"}:
@@ -269,8 +269,7 @@ def _lacks_without(sent) -> list[str]:
             out += [
                 _phrase(h)
                 for h in (obj, *obj.conjuncts)
-                if h.pos_ in {"NOUN", "PROPN"}
-                and not _is_people(h)
+                if h.pos_ in {"NOUN", "PROPN"} and not _is_people(h)
                 and not rules.is_junk_feature(h.lemma_)
             ]
     return out

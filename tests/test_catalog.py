@@ -42,7 +42,7 @@ def test_parse_appdetails_free_game_and_failures():
     assert parse_appdetails(1, free).price == 0.0
     assert parse_appdetails(2, {"2": {"success": False}}) is None
     assert parse_appdetails(3, {}) is None
-    assert parse_appdetails(4, []) is None  # Steam sometimes returns a bare list
+    assert parse_appdetails(4, []) is None          # Steam sometimes returns a bare list
 
 
 def test_refresh_fetches_stubs_misses_and_caches(db, limiter):
@@ -59,9 +59,9 @@ def test_refresh_fetches_stubs_misses_and_caches(db, limiter):
         s2 = refresh_catalog(db, client, limiter, [413150, 999])
     assert s1["fetched"] == 1 and s1["missing"] == 1
     assert db.catalog_genres(413150) == ["Indie", "RPG", "Simulation"]
-    assert db.catalog_genres(999) == []  # stub row, no genres
+    assert db.catalog_genres(999) == []                      # stub row, no genres
     assert db.count("catalog_game") == 2
-    assert s2["fresh"] == 2 and len(calls) == 2  # second run made no requests
+    assert s2["fresh"] == 2 and len(calls) == 2              # second run made no requests
 
 
 def test_rate_limit_stops_the_run_and_keeps_earlier_work(db, limiter):
@@ -73,13 +73,13 @@ def test_rate_limit_stops_the_run_and_keeps_earlier_work(db, limiter):
     with _client(handler) as client:
         stats = refresh_catalog(db, client, limiter, [413150, 777, 555])
     assert stats["fetched"] == 1 and stats["rate_limited"] == 1
-    assert db.count("catalog_game") == 1  # 555 never attempted
+    assert db.count("catalog_game") == 1                     # 555 never attempted
 
 
 def test_http_errors_are_counted_and_not_stubbed(db, limiter):
     with _client(lambda req: httpx.Response(500)) as client:
         stats = refresh_catalog(db, client, limiter, [500])
-    assert stats["failed"] == 1 and db.count("catalog_game") == 0  # retried next run
+    assert stats["failed"] == 1 and db.count("catalog_game") == 0   # retried next run
 
 
 def test_limit_caps_new_fetches(db, limiter):

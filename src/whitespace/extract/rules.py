@@ -417,50 +417,15 @@ CLAUSE_BREAKS = {"but", "however", "although", "though", "whereas"}
 
 # --- implicit demand: complaints about what a game lacks -------------------------------------
 NEG_HAVE_VERBS = {
-    "have",
-    "allow",
-    "let",
-    "support",
-    "offer",
-    "include",
-    "give",
-    "provide",
-    "contain",
-    "feature",
+    "have", "allow", "let", "support", "offer", "include", "give", "provide", "contain", "feature",
 }
 DESIGN_VERBS = {
-    "save",
-    "skip",
-    "pause",
-    "rebind",
-    "remap",
-    "customize",
-    "customise",
-    "adjust",
-    "disable",
-    "zoom",
-    "undo",
-    "resume",
-    "retry",
-    "reload",
-    "rotate",
-    "resize",
+    "save", "skip", "pause", "rebind", "remap", "customize", "customise", "adjust", "disable",
+    "zoom", "undo", "resume", "retry", "reload", "rotate", "resize",
 }
 NEGATIVE_WORDS = {
-    "unplayable",
-    "impossible",
-    "unusable",
-    "painful",
-    "frustrating",
-    "unbearable",
-    "tedious",
-    "useless",
-    "pointless",
-    "miserable",
-    "slog",
-    "chore",
-    "grind",
-    "unenjoyable",
+    "unplayable", "impossible", "unusable", "painful", "frustrating", "unbearable", "tedious",
+    "useless", "pointless", "miserable", "slog", "chore", "grind", "unenjoyable",
 }
 SCARCE_WORDS = {"little", "few", "no", "zero", "minimal", "barely"}
 

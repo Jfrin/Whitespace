@@ -10,4 +10,3 @@ coverage.xml
 data/*
 !data/.gitkeep
 PLAN.md
-log.txt
