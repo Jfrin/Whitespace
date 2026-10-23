@@ -20,10 +20,12 @@ def extract_all(
     limit: int | None = None,
     redo: bool = False,
     prefilter: str = "cue",
+    english_only: bool = True,
 ) -> dict[str, int]:
     """`redo` deletes every want_item first (posts are untouched) so new rules re-run on all.
     `prefilter`: "cue" skips posts with no wish trigger or lack cue; "all" sends every English
     post (for an LLM, which can find implicit demand the regexes can't).
+    `english_only=False` sends every language (an LLM reads them all; the rules are English-only).
     If the extractor has `extract_batch` and `batch_size > 1`, posts are sent in groups."""
     if redo:
         db.conn.execute("DELETE FROM want_item")
@@ -38,8 +40,8 @@ def extract_all(
     work = []
     for row in rows:
         stats["scanned"] += 1
-        if not is_english(row["lang"]):
-            stats["non_english"] += 1  # English only for now; see PLAN.md
+        if english_only and not is_english(row["lang"]):
+            stats["non_english"] += 1  # rules extractor only handles English
             continue
         if prefilter != "all" and not is_any_candidate(row["text"] or ""):
             continue

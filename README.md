@@ -1,17 +1,26 @@
 # Whitespace
 
-Mine player demand ("I wish it had X") from public sources, tie each want to the game and genre it
-was said about, cluster wants into niches, and score **demand vs. supply** to find under-served game
-ideas. Everything runs in Docker. Meaning extraction uses the free Gemini API; an offline spaCy rules
-extractor is included as a fallback and as a baseline to compare against.
+A market-gap finder for game developers. It ingests public player feedback (Steam reviews today, with Reddit and forums planned), extracts structured wants and complaints with an LLM (free Gemini tier, any language), ties each one to the game and genre it was said about, clusters them into niches, and scores each niche by demand against existing supply. Every extracted want keeps its verbatim source quote and the model version that produced it.
 
 ```
-sources -> ingest -> raw store -> clean -> extract -> (context) -> cluster -> gap score -> dashboard
+sources -> ingest -> clean -> extract -> context -> cluster -> gap score -> dashboard
 ```
 
-Status: ingest, clean, and extract work end to end. Catalog + context (game, genre, scope per want)
-are written and waiting on your first run. Cluster, score, and the dashboard content are not built
-yet. See `PLAN.md` for the full checklist.
+| Stage | What it does |
+|---|---|
+| **Ingest** | Pulls new posts incrementally. Official APIs where they exist (Steam, Reddit), Scrapling for HTML sources. Raw responses are stored untouched |
+| **Clean** | Flags duplicates, low-effort posts, and review-bomb spikes (reversible, nothing is deleted) |
+| **Extract** | Gemini (free tier) reads each post in any language and returns wants, complaints, and "games like X" references, each with a verbatim quote. A spaCy rules extractor is the offline fallback and baseline |
+| **Context** | Attaches the game, its genres, and a scope (this game / the whole genre / "like X") to every want |
+| **Cluster** | Groups similar wants into niches, with genre in the text so "faster progression" in a roguelike stays separate from the same wish in a 4X |
+| **Gap score** | Demand (volume, growth, intensity, spread) against supply (similar games, their ratings, recency) and dissatisfaction |
+
+Everything runs in Docker. SQLite for storage, Python 3.12, Scrapling for scraping, the free Gemini API
+for meaning extraction (one key, no billing). No usernames are stored and only public text is sent out.
+
+**Status:** ingest, clean, extract, catalog, and context work end to end on Steam data, with gold-set
+tooling to measure extraction quality. Clustering, gap scoring, and the dashboard are not built yet.
+See `PLAN.md` for the full checklist.
 
 ## Quick start (Docker)
 
@@ -119,11 +128,23 @@ How it behaves:
 - **Free-tier quota:** a per-minute 429 is waited out; a **daily** 429 stops the run cleanly
   (`stopped: 1` in the output) and the next day's run resumes. Every response is cached in
   `llm_cache`, so `--redo`, re-runs, and the cached part of a resumed run cost no quota.
-- **Sends every English cleaned post** by default (`--prefilter all`), because the LLM finds implicit
+- **Every language by default.** Gemini reads Russian, Chinese, Portuguese, Turkish, etc. natively and
+  writes `want_summary` in English, so a Russian "no checkpoints" and an English one cluster together.
+  The first Steam sample was ~51% non-English, so this roughly doubles the data. `--languages english`
+  restricts it (the spaCy rules extractor is always English-only).
+- **Sends every cleaned post** by default (`--prefilter all`), because the LLM finds implicit
   demand the regexes can't. `--prefilter cue` sends only posts with a wish trigger or lack cue.
+- **Dislikes are separate:** a post that only says "awful art style" or "HATE the fishing" becomes a
+  `dislike` item (aspect only, confidence 0.4), not a vague "better X" want. Dislikes are kept for the
+  dissatisfaction score and excluded from demand clustering. The prompt (`gemini-v3`) also asks for
+  specific summaries and sets confidence by actionability (0.9 concrete change, 0.7 area + direction,
+  0.4 sentiment only), so the 0.6 filter means something.
 - **Guards:** output is forced to a JSON schema; each item must pass the same strict validation as the
   rules path; and the model's `quote` must appear verbatim in the post or the item is dropped
   (`bad_quote` in the stats counts these). Markup (Steam BBCode) is stripped before sending.
+- **Cleaning and CJK:** the low-effort filter used to count words by spaces, so Chinese/Japanese
+  reviews (no spaces) were all dropped. It now counts characters for CJK. After upgrading run
+  `clean --refresh` once to re-flag existing posts (`--min-words` changes the threshold, default 8).
 - **What it sends:** only public review text, no usernames. On Google's free tier, submitted content
   may be used to improve their products; that is fine for public reviews, but don't send anything
   private. The paid tier doesn't do this.

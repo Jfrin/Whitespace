@@ -18,7 +18,8 @@ def load_cluster_inputs(db: Database, min_confidence: float = 0.6) -> list[tuple
     """Wants worth clustering: confident enough (junk-prone items are scored lower)."""
     rows = db.conn.execute(
         "SELECT id, want_summary, context_genres FROM want_item "
-        "WHERE COALESCE(confidence, 1.0) >= ? ORDER BY id",
+        "WHERE COALESCE(confidence, 1.0) >= ? AND COALESCE(request_type, '') != 'dislike' "
+        "ORDER BY id",
         (min_confidence,),
     ).fetchall()
     return [

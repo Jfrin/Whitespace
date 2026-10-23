@@ -369,3 +369,50 @@ def test_extract_all_sends_groups_and_keeps_finished_groups_when_stopped(db):
     assert ex.sizes == [3, 3]
     assert stats["stopped"] == 1 and stats["candidates"] == 3 and stats["items"] == 3
     assert db.count("want_item") == 3
+
+
+def test_prompt_and_schema_know_about_dislikes_and_ban_vague_summaries():
+    from whitespace.extract.gemini import SCHEMA, SYSTEM
+
+    enum = SCHEMA["properties"]["items"]["items"]["properties"]["request_type"]["enum"]
+    assert "dislike" in enum and "dislike" in SYSTEM
+    assert 'Never write "better X"' in SYSTEM and "0.4: only sentiment" in SYSTEM
+
+
+def test_a_dislike_item_passes_validation_and_is_kept(db):
+    item = {
+        **ITEM,
+        "request_type": "dislike",
+        "want_summary": "fishing",
+        "confidence": 0.4,
+        "quote": "I wish there was some kind of checkpoint",
+    }
+    ex, _ = make(db, lambda req: httpx.Response(200, json=reply([item])))
+    [got] = ex(TEXT)
+    assert got.request_type == "dislike" and got.confidence == 0.4
+
+
+def test_prompt_handles_any_language_and_english_summaries():
+    from whitespace.extract.gemini import SYSTEM
+
+    assert "any language" in SYSTEM and "write every want_summary in English" in SYSTEM
+
+
+def test_extract_all_can_send_every_language(db):
+    text = "plain review text without anything special in it"
+    db.upsert_post(Post("s", "1", "u", text, 1))
+    db.upsert_post(Post("s", "2", "u", text + " again", 2))
+    _flag_all_posts(db)
+    db.conn.execute("UPDATE post SET lang='russian' WHERE source_id='2'")
+    db.conn.commit()
+    seen = []
+    stats = extract_all(db, lambda t: (seen.append(t), [])[1], prefilter="all", english_only=False)
+    assert stats["candidates"] == 2 and stats["non_english"] == 0 and len(seen) == 2
+    seen.clear()
+    only_en = extract_all(db, lambda t: (seen.append(t), [])[1], prefilter="all")
+    assert only_en["non_english"] == 1 and len(seen) == 1
+
+
+def _flag_all_posts(db):
+    for r in db.conn.execute("SELECT id FROM post").fetchall():
+        db.set_flags(r["id"], "en", {"is_dup": False, "is_low_effort": False})

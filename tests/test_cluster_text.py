@@ -34,3 +34,10 @@ def test_low_confidence_wants_are_left_out_of_clustering(db, add_want):
     db.conn.commit()
     assert [i for i, _ in load_cluster_inputs(db)] == [a]
     assert [i for i, _ in load_cluster_inputs(db, min_confidence=0.0)] == [a, b]
+
+
+def test_dislikes_are_not_clustered_as_demand(db, add_want):
+    a = add_want("1", summary="faster progression")
+    b = add_want("2", summary="fishing", request_type="dislike")
+    assert [i for i, _ in load_cluster_inputs(db, min_confidence=0.0)] == [a]
+    assert b != a

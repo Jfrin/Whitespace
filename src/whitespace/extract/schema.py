@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-REQUEST_TYPES = {"feature_wish", "genre_request", "complaint", "games_like", "unmet_expectation"}
+REQUEST_TYPES = {
+    "feature_wish",
+    "genre_request",
+    "complaint",
+    "games_like",
+    "unmet_expectation",
+    "dislike",  # only negative sentiment about an aspect; feeds dissatisfaction, not demand
+}
 SUBJECTS = {
     "mechanic",
     "setting",

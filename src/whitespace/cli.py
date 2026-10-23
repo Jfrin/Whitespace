@@ -51,7 +51,7 @@ def cmd_ingest(args: argparse.Namespace, settings: Settings) -> int:
 def cmd_clean(args: argparse.Namespace, settings: Settings) -> int:
     from whitespace.clean.run import clean_posts
 
-    print(clean_posts(Database(settings.db_path)))
+    print(clean_posts(Database(settings.db_path), refresh=args.refresh, min_words=args.min_words))
     return 0
 
 
@@ -86,7 +86,12 @@ def cmd_extract(args: argparse.Namespace, settings: Settings) -> int:
                 db, key, model=model, client=client, rpm=rpm, index=index, batch_size=batch
             )
             stats = extract_all(
-                db, extractor, limit=args.limit, redo=args.redo, prefilter=args.prefilter or "all"
+                db,
+                extractor,
+                limit=args.limit,
+                redo=args.redo,
+                prefilter=args.prefilter or "all",
+                english_only=(args.languages or "all") == "english",
             )
         print(stats)
         print(f"gemini {model}: {extractor.stats}")
@@ -95,7 +100,12 @@ def cmd_extract(args: argparse.Namespace, settings: Settings) -> int:
 
     extractor = RuleExtractor(build_nlp(index), index)
     stats = extract_all(
-        db, extractor, limit=args.limit, redo=args.redo, prefilter=args.prefilter or "cue"
+        db,
+        extractor,
+        limit=args.limit,
+        redo=args.redo,
+        prefilter=args.prefilter or "cue",
+        english_only=(args.languages or "english") == "english",
     )
     print(stats)
     return 0
@@ -201,12 +211,21 @@ def main(argv: list[str] | None = None) -> int:
     ing = sub.add_parser("ingest", help="pull new items from one source")
     ing.add_argument("source")
     ing.set_defaults(fn=cmd_ingest)
-    sub.add_parser("clean", help="flag dups / low-effort / language").set_defaults(fn=cmd_clean)
+    cln = sub.add_parser("clean", help="flag dups / low-effort / language")
+    cln.add_argument("--refresh", action="store_true", help="re-flag every post")
+    cln.add_argument("--min-words", type=int, default=8, help="shorter posts are low-effort")
+    cln.set_defaults(fn=cmd_clean)
     ext = sub.add_parser("extract", help="extract wants (Gemini API, or offline spaCy rules)")
     ext.add_argument("--extractor", choices=["gemini", "rules"], default=None)
     ext.add_argument("--model", default=None, help="Gemini model id (default: GEMINI_MODEL)")
     ext.add_argument("--rpm", type=float, default=None, help="requests/min (default: GEMINI_RPM)")
     ext.add_argument("--batch-size", type=int, default=None, help="posts per request (1 = off)")
+    ext.add_argument(
+        "--languages",
+        choices=["all", "english"],
+        default=None,
+        help="gemini defaults to all languages, rules to english only",
+    )
     ext.add_argument("--prefilter", choices=["cue", "all"], default=None)
     ext.add_argument("--games", default="config/games.yaml")
     ext.add_argument("--limit", type=int, default=None)

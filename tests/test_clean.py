@@ -1,3 +1,5 @@
+import json
+
 from whitespace.clean.filters import (
     detect_language,
     detect_review_bombs,
@@ -41,3 +43,26 @@ def test_clean_posts_flags_dups_and_low_effort(db):
     counts = clean_posts(db)
     assert counts == {"processed": 3, "dup": 1, "low_effort": 1}
     assert clean_posts(db)["processed"] == 0  # idempotent: already flagged
+
+
+def test_cjk_text_is_judged_by_characters_not_spaces():
+    assert is_low_effort("好玩")
+    assert is_low_effort("ゲームが面白くない")
+    long_ja = "ボスが強すぎて何度もやり直したがチェックポイントがなくて辛い。" * 2
+    assert not is_low_effort(long_ja)
+    assert not is_low_effort("这个游戏的战斗系统很有意思但是没有存档点真的很难受，希望能加上")
+
+
+def test_clean_refresh_reflags_with_a_new_threshold(db):
+    db.upsert_post(Post("s", "1", "u", "needs more checkpoints please add", 1))   # 5 words
+    clean_posts(db)
+
+    def low():
+        return json.loads(db.conn.execute("SELECT flags FROM post").fetchone()["flags"])[
+            "is_low_effort"
+        ]
+
+    assert low() is True
+    assert clean_posts(db)["processed"] == 0                  # nothing new without refresh
+    assert clean_posts(db, refresh=True, min_words=4)["processed"] == 1
+    assert low() is False

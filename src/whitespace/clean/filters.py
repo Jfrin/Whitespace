@@ -24,9 +24,14 @@ def detect_language(text: str) -> str:
 _LOW_EFFORT = re.compile(r"^(this )?(game )?(sucks|is (trash|bad|garbage)|bad|trash|10/10)\b", re.I)
 
 
+_CJK = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]")
+
+
 def is_low_effort(text: str, min_words: int = 8) -> bool:
     t = text.strip()
-    return len(t.split()) < min_words or bool(_LOW_EFFORT.match(t))
+    # Chinese/Japanese have no spaces, so count roughly two characters per word-equivalent
+    units = max(len(t.split()), len(_CJK.findall(t)) // 2)
+    return units < min_words or bool(_LOW_EFFORT.match(t))
 
 
 def shingles(text: str, k: int = 3) -> set[str]:
