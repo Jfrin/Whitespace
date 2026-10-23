@@ -19,7 +19,7 @@ scrape = ["scrapling[fetchers]>=0.4"]   # run `scrapling install` for browsers (
 nlp = ["spacy>=3.7,<4", "vaderSentiment>=3.3"]  # + `python -m spacy download en_core_web_sm`
 ml = ["numpy", "sentence-transformers", "umap-learn", "hdbscan", "bertopic"]
 dashboard = ["streamlit>=1.35", "pandas"]
-dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6"]
+dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.17.1,<0.18"]
 
 [project.scripts]
 whitespace = "whitespace.cli:main"

@@ -9,4 +9,3 @@ coverage.xml
 *.egg-info/
 data/*
 !data/.gitkeep
-PLAN.md

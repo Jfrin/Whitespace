@@ -52,11 +52,11 @@ def test_reference_want_inherits_genres_of_the_referenced_game(db, add_want):
     enrich_context(db)
     row = _row(db, w)
     assert row["scope"] == "reference"
-    assert json.loads(row["context_genres"]) == ["Action", "RPG"]   # Hades, not Stardew
+    assert json.loads(row["context_genres"]) == ["Action", "RPG"]  # Hades, not Stardew
 
 
 def test_unresolved_genres_stay_null_and_fill_in_on_a_later_run(db, add_want):
-    w = add_want("1", game_appid=999)                    # not in the catalog yet
+    w = add_want("1", game_appid=999)  # not in the catalog yet
     first = enrich_context(db)
     row = _row(db, w)
     assert row["scope"] == "game_specific" and row["context_genres"] is None
@@ -72,7 +72,7 @@ def test_enrich_is_idempotent(db, add_want):
     db.upsert_catalog(STARDEW)
     add_want("1", game_appid=413150)
     enrich_context(db)
-    assert enrich_context(db)["rows"] == 0               # fully resolved rows are not revisited
+    assert enrich_context(db)["rows"] == 0  # fully resolved rows are not revisited
 
 
 def test_resolve_genres_priority_depends_on_scope(db):
@@ -80,9 +80,9 @@ def test_resolve_genres_priority_depends_on_scope(db):
     db.upsert_catalog(HADES)
     src = {"reddit:x": ["Casual"]}
     args = (db, "game_specific", 413150, [1145360], "reddit:x", src)
-    assert resolve_genres(*args) == ["RPG", "Simulation"]          # own game first
+    assert resolve_genres(*args) == ["RPG", "Simulation"]  # own game first
     args = (db, "reference", 413150, [1145360], "reddit:x", src)
-    assert resolve_genres(*args) == ["Action", "RPG"]              # referenced first
+    assert resolve_genres(*args) == ["Action", "RPG"]  # referenced first
     assert resolve_genres(db, "genre_wide", None, [], "reddit:x", src) == ["Casual"]
     assert resolve_genres(db, "genre_wide", None, [], None, src) == []
 

@@ -187,6 +187,34 @@ def cmd_gold_score(args: argparse.Namespace, settings: Settings) -> int:
     return 0
 
 
+def cmd_sample(args: argparse.Namespace, settings: Settings) -> int:
+    """Print a random sample of extracted wants (no SQL quoting needed)."""
+    db = Database(settings.db_path)
+    where: list[str] = []
+    params: list = []
+    if args.lang == "non-english":
+        where.append("lower(COALESCE(p.lang, '')) NOT IN ('', 'en', 'english', 'eng')")
+    elif args.lang:
+        where.append("lower(p.lang) = ?")
+        params.append(args.lang.lower())
+    if args.type:
+        where.append("w.request_type = ?")
+        params.append(args.type)
+    sql = (
+        "SELECT p.lang, w.request_type, w.subject, w.want_summary, w.confidence, "
+        "substr(w.quote, 1, 90) AS q FROM want_item w JOIN post p ON p.id = w.post_id"
+        + (" WHERE " + " AND ".join(where) if where else "")
+        + " ORDER BY random() LIMIT ?"
+    )
+    params.append(args.n)
+    for r in db.conn.execute(sql, params):
+        print(
+            f"{str(r['lang']):10} {r['request_type']:17} {r['subject']:13} "
+            f"{r['want_summary'][:38]:38} {(r['confidence'] or 0):.2f}  {r['q']}"
+        )
+    return 0
+
+
 def cmd_stats(args: argparse.Namespace, settings: Settings) -> int:
     db = Database(settings.db_path)
     for t in ("raw_fetch", "post", "want_item", "catalog_game", "cluster", "niche_score"):
@@ -201,6 +229,20 @@ def cmd_stats(args: argparse.Namespace, settings: Settings) -> int:
         "SELECT COUNT(*) FROM want_item WHERE context_genres IS NOT NULL"
     ).fetchone()[0]
     print(f"with genres    {with_genres}")
+    print("-- posts by language: total / low-effort / duplicate --")
+    for row in db.conn.execute(
+        "SELECT COALESCE(lang, '?') AS l, COUNT(*) AS n, "
+        "SUM(json_extract(flags, '$.is_low_effort')) AS low, "
+        "SUM(json_extract(flags, '$.is_dup')) AS dup "
+        "FROM post GROUP BY 1 ORDER BY 2 DESC LIMIT 15"
+    ):
+        print(f"{row['l']:14} {row['n']:5} {row['low'] or 0:5} {row['dup'] or 0:5}")
+    print("-- wants by request type --")
+    for row in db.conn.execute(
+        "SELECT request_type AS t, COUNT(*) AS n, ROUND(AVG(confidence), 2) AS c "
+        "FROM want_item GROUP BY 1 ORDER BY 2 DESC"
+    ):
+        print(f"{str(row['t']):18} {row['n']:5}  avg confidence {row['c']}")
     return 0
 
 
@@ -252,7 +294,12 @@ def main(argv: list[str] | None = None) -> int:
     gs.add_argument("--kind", choices=["items", "missed", "untriggered"], default="items")
     gs.add_argument("--file", default=None)
     gs.set_defaults(fn=cmd_gold_score)
-    sub.add_parser("stats", help="row counts").set_defaults(fn=cmd_stats)
+    smp = sub.add_parser("sample", help="print a random sample of extracted wants")
+    smp.add_argument("--n", type=int, default=30)
+    smp.add_argument("--lang", default=None, help="'non-english' or a Steam language, e.g. russian")
+    smp.add_argument("--type", default=None, help="request type, e.g. complaint, dislike")
+    smp.set_defaults(fn=cmd_sample)
+    sub.add_parser("stats", help="row counts, languages, request types").set_defaults(fn=cmd_stats)
     args = p.parse_args(argv)
     return args.fn(args, Settings.from_env())
 

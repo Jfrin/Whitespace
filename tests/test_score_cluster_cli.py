@@ -56,7 +56,7 @@ def test_cli_context_and_catalog_run_on_an_empty_db(monkeypatch, tmp_path, capsy
     monkeypatch.setenv("WHITESPACE_DATA_DIR", str(tmp_path))
     assert main(["context", "--context-config", "config/context.yaml"]) == 0
     assert "unresolved" in capsys.readouterr().out
-    assert main(["catalog"]) == 0                      # nothing referenced -> no network calls
+    assert main(["catalog"]) == 0  # nothing referenced -> no network calls
     assert "0 appids referenced" in capsys.readouterr().out
     assert main(["stats"]) == 0 and "catalog_game" in capsys.readouterr().out
 
@@ -81,3 +81,29 @@ def test_cli_gold_untriggered_kind(monkeypatch, tmp_path, capsys):
     capsys.readouterr()
     assert main(["gold-score", "--kind", "untriggered"]) == 0
     assert '"wish_rate": null' in capsys.readouterr().out
+
+
+def test_cli_stats_and_sample_show_languages_and_filter_by_them(monkeypatch, tmp_path, capsys):
+    from whitespace.models import Post
+    from whitespace.storage import Database
+
+    monkeypatch.setenv("WHITESPACE_DATA_DIR", str(tmp_path))
+    db = Database(tmp_path / "whitespace.sqlite")
+    for i, lang in enumerate(["english", "russian"]):
+        db.upsert_post(Post("s", str(i), "u", f"text {i}", i, lang=lang))
+    for r in db.conn.execute("SELECT id, lang FROM post").fetchall():
+        flags = {"is_dup": False, "is_low_effort": r["lang"] == "russian"}
+        db.set_flags(r["id"], r["lang"], flags)
+        db.conn.execute(
+            "INSERT INTO want_item(post_id, request_type, subject, want_summary, intensity, "
+            "quote, confidence, extractor_version) VALUES (?,?,?,?,?,?,?,?)",
+            (r["id"], "complaint", "ux", f"want {r['lang']}", 2, "q", 0.7, "t"),
+        )
+    db.conn.commit()
+    assert main(["stats"]) == 0
+    out = capsys.readouterr().out
+    assert "russian" in out and "complaint" in out and "by language" in out
+    assert main(["sample", "--lang", "non-english", "--n", "5"]) == 0
+    sample = capsys.readouterr().out
+    assert "want russian" in sample and "want english" not in sample
+    assert main(["sample", "--type", "dislike"]) == 0 and capsys.readouterr().out == ""

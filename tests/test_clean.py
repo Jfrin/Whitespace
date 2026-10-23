@@ -54,7 +54,7 @@ def test_cjk_text_is_judged_by_characters_not_spaces():
 
 
 def test_clean_refresh_reflags_with_a_new_threshold(db):
-    db.upsert_post(Post("s", "1", "u", "needs more checkpoints please add", 1))   # 5 words
+    db.upsert_post(Post("s", "1", "u", "needs more checkpoints please add", 1))  # 5 words
     clean_posts(db)
 
     def low():
@@ -63,6 +63,6 @@ def test_clean_refresh_reflags_with_a_new_threshold(db):
         ]
 
     assert low() is True
-    assert clean_posts(db)["processed"] == 0                  # nothing new without refresh
+    assert clean_posts(db)["processed"] == 0  # nothing new without refresh
     assert clean_posts(db, refresh=True, min_words=4)["processed"] == 1
     assert low() is False

@@ -71,6 +71,17 @@ docker compose run --rm --entrypoint python app -c "import sqlite3; c=sqlite3.co
 docker compose run --rm --entrypoint python app -c "import sqlite3; c=sqlite3.connect('/app/data/whitespace.sqlite'); [print(r) for r in c.execute('select want_summary, substr(quote,1,120) from want_item order by random() limit 15')]"
 ```
 
+## Looking at results
+
+```powershell
+make stats                                         # counts, posts by language, wants by request type
+make sample                                        # 30 random extracted wants
+make sample LANGS=non-english                      # only non-English posts
+make sample TYPE=dislike SAMPLE=50                 # one request type
+```
+
+Without make: `docker compose run --rm app sample --lang non-english --n 20`.
+
 ## Layout
 
 | Path | What |
