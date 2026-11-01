@@ -61,7 +61,48 @@ def cmd_extract(args: argparse.Namespace, settings: Settings) -> int:
 
     index = load_index(args.games, settings.data_dir / "apps.json")
     db = Database(settings.db_path)
-    name = args.extractor or ("gemini" if os.environ.get("GEMINI_API_KEY") else "rules")
+    name = args.extractor or "azure"
+    if name == "azure":
+        key = os.environ.get("AZURE_OPENAI_API_KEY")
+        endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
+        if not key or not endpoint:
+            print(
+                "Set AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT in .env "
+                "(or use --extractor rules).",
+                file=sys.stderr,
+            )
+            return 2
+        from whitespace.extract.azure import DEFAULT_MODEL, AzureExtractor
+
+        model = args.model or os.environ.get("AZURE_OPENAI_DEPLOYMENT", DEFAULT_MODEL)
+        rpm = args.rpm if args.rpm is not None else float(os.environ.get("AZURE_OPENAI_RPM", "10"))
+        batch = args.batch_size or int(os.environ.get("AZURE_OPENAI_BATCH_SIZE", "8"))
+        if rpm < 0 or batch < 1:
+            print("rpm must be non-negative and batch size must be positive", file=sys.stderr)
+            return 2
+        print(f"azure {model}: {rpm:g} requests/min, {batch} posts per request", file=sys.stderr)
+        with httpx.Client(timeout=120.0) as client:
+            extractor = AzureExtractor(
+                db,
+                key,
+                endpoint,
+                model=model,
+                client=client,
+                rpm=rpm,
+                index=index,
+                batch_size=batch,
+            )
+            stats = extract_all(
+                db,
+                extractor,
+                limit=args.limit,
+                redo=args.redo,
+                prefilter=args.prefilter or "all",
+                english_only=(args.languages or "all") == "english",
+            )
+        print(stats)
+        print(f"azure {model}: {extractor.stats}")
+        return 1 if stats.get("stopped") else 0
     if name == "gemini":
         key = os.environ.get("GEMINI_API_KEY")
         if not key:
@@ -95,7 +136,7 @@ def cmd_extract(args: argparse.Namespace, settings: Settings) -> int:
             )
         print(stats)
         print(f"gemini {model}: {extractor.stats}")
-        return 0
+        return 1 if stats.get("stopped") else 0
     from whitespace.extract.nlp import RuleExtractor, build_nlp
 
     extractor = RuleExtractor(build_nlp(index), index)
@@ -257,16 +298,16 @@ def main(argv: list[str] | None = None) -> int:
     cln.add_argument("--refresh", action="store_true", help="re-flag every post")
     cln.add_argument("--min-words", type=int, default=8, help="shorter posts are low-effort")
     cln.set_defaults(fn=cmd_clean)
-    ext = sub.add_parser("extract", help="extract wants (Gemini API, or offline spaCy rules)")
-    ext.add_argument("--extractor", choices=["gemini", "rules"], default=None)
-    ext.add_argument("--model", default=None, help="Gemini model id (default: GEMINI_MODEL)")
-    ext.add_argument("--rpm", type=float, default=None, help="requests/min (default: GEMINI_RPM)")
+    ext = sub.add_parser("extract", help="extract wants (Azure Foundry, Gemini, or offline rules)")
+    ext.add_argument("--extractor", choices=["azure", "gemini", "rules"], default=None)
+    ext.add_argument("--model", default=None, help="deployment or model id")
+    ext.add_argument("--rpm", type=float, default=None, help="requests/min (0 disables throttling)")
     ext.add_argument("--batch-size", type=int, default=None, help="posts per request (1 = off)")
     ext.add_argument(
         "--languages",
         choices=["all", "english"],
         default=None,
-        help="gemini defaults to all languages, rules to english only",
+        help="LLM extractors default to all languages, rules to english only",
     )
     ext.add_argument("--prefilter", choices=["cue", "all"], default=None)
     ext.add_argument("--games", default="config/games.yaml")

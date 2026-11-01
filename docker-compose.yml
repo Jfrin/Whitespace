@@ -34,5 +34,5 @@ services:
       - path: .env
         required: false
     environment: {WHITESPACE_DATA_DIR: /app/data}
-    volumes: ["./data:/app/data:ro"]
-    ports: ["8501:8501"]
+    volumes: ["./data:/app/data", "./config:/app/config:ro"]
+    ports: ["127.0.0.1:8501:8501"]

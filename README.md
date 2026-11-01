@@ -1,6 +1,6 @@
 # Whitespace
 
-A market-gap finder for game developers. It ingests public player feedback (Steam reviews today, with Reddit and forums planned), extracts structured wants and complaints with an LLM (free Gemini tier, any language), ties each one to the game and genre it was said about, clusters them into niches, and scores each niche by demand against existing supply. Every extracted want keeps its verbatim source quote and the model version that produced it.
+A market-gap finder for game developers. It ingests public player feedback (Steam reviews today, with Reddit and forums planned), extracts structured wants and complaints with an LLM (Azure Foundry, any language), ties each one to the game and genre it was said about, clusters them into niches, and scores each niche by demand against existing supply. Every extracted want keeps its verbatim source quote and the model version that produced it.
 
 ```
 sources -> ingest -> clean -> extract -> context -> cluster -> gap score -> dashboard
@@ -10,19 +10,30 @@ sources -> ingest -> clean -> extract -> context -> cluster -> gap score -> dash
 |---|---|
 | **Ingest** | Pulls new posts incrementally. Official APIs where they exist (Steam, Reddit), Scrapling for HTML sources. Raw responses are stored untouched |
 | **Clean** | Flags duplicates, low-effort posts, and review-bomb spikes (reversible, nothing is deleted) |
-| **Extract** | Gemini (free tier) reads each post in any language and returns wants, complaints, and "games like X" references, each with a verbatim quote. A spaCy rules extractor is the offline fallback and baseline |
+| **Extract** | Azure Foundry reads each post in any language and returns wants, complaints, and "games like X" references, each with a verbatim quote. A spaCy rules extractor is the offline fallback and baseline |
 | **Context** | Attaches the game, its genres, and a scope (this game / the whole genre / "like X") to every want |
 | **Cluster** | Groups similar wants into niches, with genre in the text so "faster progression" in a roguelike stays separate from the same wish in a 4X |
 | **Gap score** | Demand (volume, growth, intensity, spread) against supply (similar games, their ratings, recency) and dissatisfaction |
 
-Everything runs in Docker. SQLite for storage, Python 3.12, Scrapling for scraping, the free Gemini API
-for meaning extraction (one key, no billing). No usernames are stored and only public text is sent out.
+Everything runs in Docker. SQLite for storage, Python 3.12, Scrapling for scraping, and Azure Foundry
+for meaning extraction. Azure usage may incur charges. No usernames are stored and only public text is sent out.
 
 **Status:** ingest, clean, extract, catalog, and context work end to end on Steam data, with gold-set
-tooling to measure extraction quality. Clustering, gap scoring, and the dashboard are not built yet.
+tooling to measure extraction quality. Clustering and gap scoring are not built yet.
 See `PLAN.md` for the full checklist.
 
-## Quick start (Docker)
+## Web UI (Docker)
+
+Run `docker compose --profile dashboard up --build dashboard` (or `make dashboard`), then open
+**http://localhost:8501**. Enter Steam app IDs and your Azure endpoint, API key and deployment in
+the sidebar, then click **Run full pipeline**. You can also run individual stages, monitor progress,
+and view extracted wants. Select **Rules** for offline English extraction without an Azure key.
+
+Browser-entered settings last for the session and do not overwrite configuration files. You can
+instead set Azure defaults in `.env`. The interface is bound to localhost and is intended for local
+use only; it has no user authentication. Data is saved in `./data`.
+
+## Command-line quick start (Docker)
 
 ```powershell
 copy .env.example .env      # set WHITESPACE_CONTACT=you@example.com
@@ -106,7 +117,7 @@ Without make: `docker compose run --rm app sample --lang non-english --n 20`.
 - `dev`: editable install + pytest/ruff. Used by `test`, `lint`, `fmt`, and CI.
 - `prod`: the `whitespace` CLI. `--build-arg WITH_BROWSERS=1` adds Playwright browsers for
   `DynamicFetcher`/`StealthyFetcher` sources (large; most sources don't need it).
-- `dashboard`: Streamlit on :8501, reads `./data` read-only.
+- `dashboard`: local Streamlit pipeline console on :8501, reads and writes `./data`.
 
 ## CI
 
@@ -115,12 +126,15 @@ with the coverage gate, then builds the prod and dashboard images and smoke-test
 `pipeline.yml` is a manual ingest+clean run; its schedule stays commented out until the SQLite file
 is persisted between runs (see the TODO in the file).
 
-## Extraction with Gemini (default)
+## Extraction with Azure Foundry (default)
+
+Deploy `gpt-4.1-mini` in your Azure Foundry resource. Copy `.env.example` to `.env` and set
+`AZURE_OPENAI_ENDPOINT` to the resource endpoint and `AZURE_OPENAI_API_KEY` to its key.
+Set `AZURE_OPENAI_DEPLOYMENT` if your deployment has a different name. Availability, pricing,
+and quotas depend on your Azure resource and deployment.
 
 ```powershell
-# put GEMINI_API_KEY=... in .env  (copy .env.example), then:
 docker compose --profile pipeline build app
-docker compose run --rm app gemini-models                  # models your key can call
 docker compose run --rm app extract --limit 100            # try a small batch first
 docker compose run --rm app extract                        # the rest
 docker compose run --rm app extract --extractor rules      # offline spaCy fallback
@@ -128,18 +142,17 @@ docker compose run --rm app extract --extractor rules      # offline spaCy fallb
 
 How it behaves:
 
-- **Batching:** by default 8 posts go in one request (`--batch-size`, `GEMINI_BATCH_SIZE`; 1 turns it
+- **Batching:** by default 8 posts go in one request (`--batch-size`, `AZURE_OPENAI_BATCH_SIZE`; 1 turns it
   off), so ~1,200 English posts need ~150 requests instead of ~1,200. At the default 10 requests/min
   that is roughly 15 minutes. Results are cached per post, so batched and single runs share the cache.
 - **Progress:** the run prints the post count up front and a line per batch. Ctrl+C is safe: finished
   batches are saved and cached responses make the re-run cheap.
-- **Model:** `gemini-3.5-flash-lite` by default (the `gemini-2.5-*` models stopped working on at least one free key). Override with
-  `GEMINI_MODEL` or `--model`. Exact free quotas per model are shown in AI Studio for your project;
-  set `GEMINI_RPM` (default 10) to match.
-- **Free-tier quota:** a per-minute 429 is waited out; a **daily** 429 stops the run cleanly
-  (`stopped: 1` in the output) and the next day's run resumes. Every response is cached in
-  `llm_cache`, so `--redo`, re-runs, and the cached part of a resumed run cost no quota.
-- **Every language by default.** Gemini reads Russian, Chinese, Portuguese, Turkish, etc. natively and
+- **Model:** `gpt-4.1-mini` is the default deployment name; override with
+  `AZURE_OPENAI_DEPLOYMENT` or `--model`. Set `AZURE_OPENAI_RPM` (default 10) to match your quota.
+- **Rate limits:** 429 and server errors are retried; if retries are exhausted the run stops cleanly
+  (`stopped: 1`) and can be resumed. Responses are cached per post and deployment in `llm_cache`,
+  so cached re-runs do not call the API.
+- **Every language by default.** The model reads Russian, Chinese, Portuguese, Turkish, etc. and
   writes `want_summary` in English, so a Russian "no checkpoints" and an English one cluster together.
   The first Steam sample was ~51% non-English, so this roughly doubles the data. `--languages english`
   restricts it (the spaCy rules extractor is always English-only).
@@ -147,7 +160,7 @@ How it behaves:
   demand the regexes can't. `--prefilter cue` sends only posts with a wish trigger or lack cue.
 - **Dislikes are separate:** a post that only says "awful art style" or "HATE the fishing" becomes a
   `dislike` item (aspect only, confidence 0.4), not a vague "better X" want. Dislikes are kept for the
-  dissatisfaction score and excluded from demand clustering. The prompt (`gemini-v3`) also asks for
+  dissatisfaction score and excluded from demand clustering. The prompt (`azure-v3`) also asks for
   specific summaries and sets confidence by actionability (0.9 concrete change, 0.7 area + direction,
   0.4 sentiment only), so the 0.6 filter means something.
 - **Guards:** output is forced to a JSON schema; each item must pass the same strict validation as the
@@ -156,12 +169,13 @@ How it behaves:
 - **Cleaning and CJK:** the low-effort filter used to count words by spaces, so Chinese/Japanese
   reviews (no spaces) were all dropped. It now counts characters for CJK. After upgrading run
   `clean --refresh` once to re-flag existing posts (`--min-words` changes the threshold, default 8).
-- **What it sends:** only public review text, no usernames. On Google's free tier, submitted content
-  may be used to improve their products; that is fine for public reviews, but don't send anything
-  private. The paid tier doesn't do this.
-- **Comparing extractors:** every want records `extractor_version` (e.g. `gemini-v1:gemini-2.5-flash-lite`
+- **What it sends:** only public review text, no usernames. Review your Azure deployment's data
+  handling and pricing before sending data.
+- **Comparing extractors:** every want records `extractor_version` (e.g. `azure-v3:gpt-4.1-mini`
   or `rules-v2`). `gold-export` includes the column and `gold-score` reports `by_extractor`, so label
   a sample from each and compare precision directly.
+
+The previous Gemini integration remains available with `--extractor gemini` and `GEMINI_API_KEY`.
 
 ## Rules extractor (offline fallback)
 

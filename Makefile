@@ -13,7 +13,8 @@ LANGS  ?=
 TYPE   ?=
 
 .PHONY: help build build-app test lint fmt shell ingest clean-posts extract extract-rules redo \
-        catalog context refresh stats gemini-models sample gold-export gold-score pipeline dashboard
+        catalog context refresh stats gemini-models sample gold-export gold-score pipeline dashboard \
+        ui ui-stop ui-logs
 
 help:
 > @echo Dev:       make build / test / lint / fmt / shell
@@ -24,7 +25,7 @@ help:
 > @echo Gemini:    make gemini-models
 > @echo Look:      make sample [SAMPLE=30 LANGS=non-english TYPE=dislike] / stats
 > @echo Gold set:  make gold-export [KIND=items/missed/untriggered N=300] / gold-score [KIND=...]
-> @echo Dashboard: make dashboard
+> @echo Web UI:    make ui / ui-logs / ui-stop
 
 # --- build / dev ---------------------------------------------------------------------------
 build:
@@ -87,5 +88,14 @@ gold-score: build-app
 
 pipeline: ingest clean-posts extract catalog context stats
 
-dashboard:
-> docker compose --profile dashboard up --build dashboard
+dashboard: ui
+
+ui:
+> docker compose --profile dashboard up --build -d dashboard
+> @echo Web UI: http://localhost:8501
+
+ui-stop:
+> docker compose --profile dashboard stop dashboard
+
+ui-logs:
+> docker compose --profile dashboard logs -f dashboard

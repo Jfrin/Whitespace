@@ -33,9 +33,10 @@ USER app
 ENTRYPOINT ["whitespace"]
 CMD ["stats"]
 
-# ---- dashboard --------------------------------------------------------------------------
+# ---- dashboard: pipeline console + results -----------------------------------------------
 FROM base AS dashboard
-RUN pip install ".[dashboard]"
+RUN pip install ".[dashboard,scrape,nlp]" && python -m spacy download en_core_web_sm
+COPY --chown=app:app config ./config
 USER app
 EXPOSE 8501
 CMD ["streamlit", "run", "src/whitespace/serve/app.py", "--server.address=0.0.0.0", "--server.port=8501"]
