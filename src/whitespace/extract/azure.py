@@ -3,15 +3,42 @@
 from __future__ import annotations
 
 import hashlib
+import sys
 from copy import deepcopy
 
 import httpx
 
+from whitespace.extract import rules
 from whitespace.extract.errors import ExtractorStop
-from whitespace.extract.gemini import SCHEMA, SYSTEM, GeminiExtractor
+from whitespace.extract.llm import MAX_CHARS, SCHEMA, SYSTEM, LLMExtractor
 
 DEFAULT_MODEL = "gpt-4.1-mini"
 PROMPT_VERSION = "azure-v3"
+
+
+class _ContentFiltered(Exception):
+    """Azure blocked this request because of its content."""
+
+
+def _is_content_filter(resp: httpx.Response) -> bool:
+    if resp.status_code != 400:
+        return False
+    try:
+        payload = resp.json()
+    except ValueError:
+        return False
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if not isinstance(error, dict):
+        return False
+    inner = error.get("innererror") or {}
+    code = str(error.get("code") or "").lower()
+    inner_code = str(inner.get("code") or "").lower() if isinstance(inner, dict) else ""
+    message = str(error.get("message") or "").lower()
+    return (
+        code in {"content_filter", "contentfilter"}
+        or inner_code == "responsibleaipolicyviolation"
+        or ("filtered" in message and "content management policy" in message)
+    )
 
 
 def _strict_schema(schema: dict) -> dict:
@@ -30,7 +57,7 @@ def _strict_schema(schema: dict) -> dict:
     return schema
 
 
-class AzureExtractor(GeminiExtractor):
+class AzureExtractor(LLMExtractor):
     """Reuse validation, batching and caching with a Foundry deployment."""
 
     def __init__(self, db, api_key: str, endpoint: str, model: str = DEFAULT_MODEL, **kwargs):
@@ -39,6 +66,27 @@ class AzureExtractor(GeminiExtractor):
         if not self.endpoint.endswith("/openai/v1"):
             self.endpoint += "/openai/v1"
         self.version = f"{PROMPT_VERSION}:{model}"
+        self.stats.update(filtered_posts=0, filtered_batches=0)
+
+    def __call__(self, text: str):
+        try:
+            return super().__call__(text)
+        except _ContentFiltered:
+            cleaned = rules.strip_markup(text)[:MAX_CHARS]
+            # Remember the skip so resumed runs don't repeatedly send the same blocked post.
+            self.db.llm_cache_put(self._key(cleaned), self.model, '{"items": [], "filtered": true}')
+            self.stats["filtered_posts"] += 1
+            print("Azure content filter: skipped one post.", file=sys.stderr)
+            return []
+
+    def _run_chunk(self, chunk: list[int], cleaned: list[str], results: list) -> None:
+        try:
+            super()._run_chunk(chunk, cleaned, results)
+        except _ContentFiltered:
+            self.stats["filtered_batches"] += 1
+            print("Azure content filter: checking batch posts individually.", file=sys.stderr)
+            for i in chunk:
+                results[i] = self(cleaned[i])
 
     def _key(self, cleaned: str) -> str:
         return hashlib.sha1(f"{self.version}|{self.endpoint}|{cleaned}".encode()).hexdigest()
@@ -86,6 +134,8 @@ class AzureExtractor(GeminiExtractor):
             if resp.status_code == 200:
                 try:
                     choice = resp.json()["choices"][0]
+                    if choice.get("finish_reason") == "content_filter":
+                        raise _ContentFiltered
                     message = choice["message"]
                     text = message.get("content")
                     if (
@@ -112,6 +162,8 @@ class AzureExtractor(GeminiExtractor):
                             wait = 30.0 if resp.status_code == 429 else 2 ** (attempt + 1)
                     self.sleep(max(0, wait))
                 continue
+            if _is_content_filter(resp):
+                raise _ContentFiltered
             raise ExtractorStop(
                 f"Azure Foundry API error {resp.status_code}: {resp.text[:300]} "
                 "(check AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, and deployment name)"

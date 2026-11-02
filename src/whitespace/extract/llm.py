@@ -1,16 +1,7 @@
-"""Meaning extraction with the Gemini API. Works on the free tier.
-
-Why this is safe to run on a free quota:
-- every response is cached in SQLite (`llm_cache`), so `--redo` and re-runs cost nothing
-- a 429 for the per-minute quota is waited out; a daily-quota 429 stops the run cleanly and the
-  next run resumes (cached posts are free)
-- the model must quote the post verbatim; items whose quote is not in the post are dropped
-  (guards against invented wants), and every item passes the same strict schema as the rules path
-"""
+"""Shared LLM extraction prompts, validation, per-post caching, and batching."""
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import time
@@ -21,14 +12,10 @@ import httpx
 
 from whitespace.extract import rules
 from whitespace.extract.appid import AppIndex
-from whitespace.extract.errors import ExtractorStop
 from whitespace.extract.schema import REQUEST_TYPES, SUBJECTS, WantItem, validate_item
 from whitespace.ingest.base import RateLimiter
 from whitespace.storage import Database
 
-PROMPT_VERSION = "gemini-v3"
-BASE = "https://generativelanguage.googleapis.com/v1beta"
-DEFAULT_MODEL = "gemini-3.5-flash-lite"  # override with GEMINI_MODEL (see `gemini-models`)
 MAX_CHARS = 3000
 
 SYSTEM = """You extract unmet player demand from ONE video-game review or forum post.
@@ -121,35 +108,14 @@ def quote_in_text(quote: str, text: str) -> bool:
     return bool(q) and q in _norm(text)
 
 
-def _quota_info(resp: httpx.Response) -> tuple[bool, float | None]:
-    """(is_daily_quota, seconds_to_wait) from a 429 body."""
-    try:
-        err = resp.json().get("error", {})
-    except ValueError:
-        return False, None
-    blob = json.dumps(err)
-    per_day = "PerDay" in blob or "per day" in blob.lower()
-    wait: float | None = None
-    for d in err.get("details", []) or []:
-        m = re.match(r"([\d.]+)s", str(d.get("retryDelay", "")))
-        if m:
-            wait = float(m.group(1))
-    if wait is None:
-        try:
-            wait = float(resp.headers.get("retry-after", ""))
-        except ValueError:
-            wait = None
-    return per_day, wait
-
-
-class GeminiExtractor:
-    """text -> list[WantItem], through the Gemini REST API."""
+class LLMExtractor:
+    """Shared extraction workflow; subclasses implement provider requests and cache keys."""
 
     def __init__(
         self,
         db: Database,
         api_key: str,
-        model: str = DEFAULT_MODEL,
+        model: str,
         client: httpx.Client | None = None,
         rpm: float = 10.0,
         index: AppIndex | None = None,
@@ -162,7 +128,6 @@ class GeminiExtractor:
         self.client = client or httpx.Client(timeout=60.0)
         self.index, self.sleep, self.max_retries = index, sleep, max_retries
         self.limiter = RateLimiter(60.0 / rpm if rpm else 0.0, sleep=sleep)
-        self.version = f"{PROMPT_VERSION}:{model}"
         self.batch_size, self.batch_chars = batch_size, batch_chars
         self.stats = {
             "calls": 0, "cache_hits": 0, "retries": 0, "items": 0,
@@ -191,7 +156,7 @@ class GeminiExtractor:
 
     # ----------------------------------------------------------------- internals
     def _key(self, cleaned: str) -> str:
-        return hashlib.sha1(f"{PROMPT_VERSION}|{self.model}|{cleaned}".encode()).hexdigest()
+        raise NotImplementedError
 
     def _body(
         self,
@@ -200,64 +165,10 @@ class GeminiExtractor:
         schema: dict | None = None,
         max_tokens: int = 1500,
     ) -> dict:
-        return {
-            "systemInstruction": {"parts": [{"text": system}]},
-            "contents": [{"role": "user", "parts": [{"text": content}]}],
-            "generationConfig": {
-                "temperature": 0,
-                "maxOutputTokens": max_tokens,
-                "responseMimeType": "application/json",
-                "responseJsonSchema": schema or SCHEMA,
-            },
-        }
+        raise NotImplementedError
 
     def _generate(self, body: dict) -> str:
-        """One API call (with retries). Returns the model's JSON text."""
-        url = f"{BASE}/models/{self.model}:generateContent"
-        headers = {"x-goog-api-key": self.api_key, "Content-Type": "application/json"}
-        last = ""
-        for attempt in range(self.max_retries + 1):
-            self.limiter.wait()
-            try:
-                resp = self.client.post(url, json=body, headers=headers)
-            except httpx.TransportError as exc:
-                last = f"network error: {exc!r}"
-                self.sleep(2 ** (attempt + 1))
-                continue
-            if resp.status_code == 200:
-                return self._text_of(resp.json())
-            if resp.status_code == 429:
-                per_day, wait = _quota_info(resp)
-                if per_day:
-                    raise ExtractorStop(
-                        "daily quota used up for this model; resume tomorrow "
-                        "(cached posts are free)"
-                    )
-                last = "rate limited (per-minute quota)"
-                self.stats["retries"] += 1
-                self.sleep(min(wait or 30.0, 90.0) + 1.0)
-                continue
-            if resp.status_code >= 500:
-                last = f"server error {resp.status_code}"
-                self.stats["retries"] += 1
-                self.sleep(2 ** (attempt + 1))
-                continue
-            raise ExtractorStop(
-                f"Gemini API error {resp.status_code}: {resp.text[:300]} "
-                "(check GEMINI_API_KEY, GEMINI_MODEL, and that the free tier is available "
-                "in your region)"
-            )
-        raise ExtractorStop(f"giving up after {self.max_retries + 1} attempts: {last}")
-
-    @staticmethod
-    def _text_of(data: dict) -> str:
-        """Model output text; a blocked or empty answer becomes an empty result."""
-        if (data.get("promptFeedback") or {}).get("blockReason"):
-            return '{"items": []}'
-        cands = data.get("candidates") or []
-        parts = ((cands[0].get("content") or {}).get("parts") or []) if cands else []
-        text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
-        return text.strip() or '{"items": []}'
+        raise NotImplementedError
 
     def _items(self, payload: object, cleaned: str) -> list[WantItem]:
         raw_items = payload.get("items") if isinstance(payload, dict) else payload
@@ -280,7 +191,7 @@ class GeminiExtractor:
 
     # ------------------------------------------------------------------ batching
     def extract_batch(self, texts: list[str]) -> list[list[WantItem]]:
-        """Several posts per request: far fewer calls on a small free quota. Results are cached
+        """Several posts per request. Results are cached
         per post, so single-post and batched runs share the cache."""
         cleaned = [rules.strip_markup(t)[:MAX_CHARS] for t in texts]
         results: list[list[WantItem] | None] = [None] * len(texts)
@@ -339,15 +250,3 @@ class GeminiExtractor:
             one = {"items": items}
             self.db.llm_cache_put(self._key(cleaned[i]), self.model, json.dumps(one))
             results[i] = self._items(one, cleaned[i])
-
-
-def list_models(api_key: str, client: httpx.Client) -> list[str]:
-    """Model ids this key can call generateContent on."""
-    headers = {"x-goog-api-key": api_key}
-    resp = client.get(f"{BASE}/models", params={"pageSize": 200}, headers=headers)
-    resp.raise_for_status()
-    return [
-        m["name"].removeprefix("models/")
-        for m in resp.json().get("models", [])
-        if "generateContent" in m.get("supportedGenerationMethods", [])
-    ]

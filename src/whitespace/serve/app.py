@@ -51,7 +51,10 @@ with st.sidebar:
         batch = st.number_input("Posts per request", min_value=1, max_value=100, value=8)
         st.caption("Azure requests may incur charges.")
     else:
-        st.caption("Rules run offline and only process English posts.")
+        st.caption(
+            "Rules run offline and only process English posts; "
+            "other languages are skipped, not deleted."
+        )
     st.caption("Changes apply to this browser session; they don't modify .env or config files.")
 
 job = runner()

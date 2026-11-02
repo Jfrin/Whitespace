@@ -27,7 +27,8 @@ See `PLAN.md` for the full checklist.
 Run `docker compose --profile dashboard up --build dashboard` (or `make dashboard`), then open
 **http://localhost:8501**. Enter Steam app IDs and your Azure endpoint, API key and deployment in
 the sidebar, then click **Run full pipeline**. You can also run individual stages, monitor progress,
-and view extracted wants. Select **Rules** for offline English extraction without an Azure key.
+and view extracted wants. Select **Rules** for offline English extraction without an Azure key;
+posts tagged as other languages are skipped, not deleted.
 
 Browser-entered settings last for the session and do not overwrite configuration files. You can
 instead set Azure defaults in `.env`. The interface is bound to localhost and is intended for local
@@ -50,6 +51,8 @@ docker compose run --rm app stats
 ```
 
 Data lands in `./data/whitespace.sqlite` (raw responses in `./data/raw/`), both gitignored.
+Steam reviews use the public `IUserReviewsService/GetAppReviews` API; no Steam API key is needed.
+Anonymous calls have a lower rate limit and can return HTTP 429; wait and retry if that happens.
 If you have `make`, `make build | test | lint | ingest SOURCE=... | extract | stats | dashboard`
 wrap the same commands.
 
@@ -152,6 +155,9 @@ How it behaves:
 - **Rate limits:** 429 and server errors are retried; if retries are exhausted the run stops cleanly
   (`stopped: 1`) and can be resumed. Responses are cached per post and deployment in `llm_cache`,
   so cached re-runs do not call the API.
+- **Content filtering:** if Azure blocks a batch, posts are checked individually; blocked posts are
+  skipped and cached as filtered while extraction continues. Counts appear in `filtered_posts` and
+  `filtered_batches`. Other API errors still stop the run.
 - **Every language by default.** The model reads Russian, Chinese, Portuguese, Turkish, etc. and
   writes `want_summary` in English, so a Russian "no checkpoints" and an English one cluster together.
   The first Steam sample was ~51% non-English, so this roughly doubles the data. `--languages english`
@@ -174,8 +180,6 @@ How it behaves:
 - **Comparing extractors:** every want records `extractor_version` (e.g. `azure-v3:gpt-4.1-mini`
   or `rules-v2`). `gold-export` includes the column and `gold-score` reports `by_extractor`, so label
   a sample from each and compare precision directly.
-
-The previous Gemini integration remains available with `--extractor gemini` and `GEMINI_API_KEY`.
 
 ## Rules extractor (offline fallback)
 
@@ -206,8 +210,11 @@ The first real run showed the happy path works but leaked junk ("like this", "ho
 - **confidence penalty**: items with no design subject lose 0.25 confidence. Rows are kept; consumers
   filter (`cluster/text.py` keeps `confidence >= 0.6`)
 
-Extraction is **English-only**: posts whose language tag isn't English are skipped and counted as
-`non_english` in the `extract` output (about a third of the first Steam sample). `complaint` items
+Offline extraction is **English-only**: posts tagged as other languages are skipped and counted as
+`non_english` in the `extract` output. They remain in storage and can be processed with Azure later.
+Language filtering relies on the stored tag; missing tags are treated as English, so untagged or
+incorrectly tagged posts may still be processed. `--extractor rules --languages all` is rejected.
+`complaint` items
 are emitted by a separate lack channel ("no X", "can't X", "lacks X", "not enough X"), written as the
 thing that is missing in positive form ("no fast restarts" becomes `fast restart`) so they cluster
 with wishes. Negated wishes ("I wish this wasn't a roguelite") stay `without roguelite`.

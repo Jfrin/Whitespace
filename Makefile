@@ -13,7 +13,7 @@ LANGS  ?=
 TYPE   ?=
 
 .PHONY: help build build-app test lint fmt shell ingest clean-posts extract extract-rules redo \
-        catalog context refresh stats gemini-models sample gold-export gold-score pipeline dashboard \
+        catalog context refresh stats sample gold-export gold-score pipeline dashboard \
         ui ui-stop ui-logs
 
 help:
@@ -22,7 +22,6 @@ help:
 > @echo            make catalog / context / stats / pipeline (runs all of the above in order)
 > @echo Redo:      make redo [LIMIT=100] (re-extract all) / refresh (recompute context)
 > @echo            make extract-rules (offline spaCy, replaces existing wants)
-> @echo Gemini:    make gemini-models
 > @echo Look:      make sample [SAMPLE=30 LANGS=non-english TYPE=dislike] / stats
 > @echo Gold set:  make gold-export [KIND=items/missed/untriggered N=300] / gold-score [KIND=...]
 > @echo Web UI:    make ui / ui-logs / ui-stop
@@ -76,9 +75,6 @@ stats: build-app
 
 sample: build-app
 > $(RUN) app sample --n $(SAMPLE) $(if $(LANGS),--lang $(LANGS),) $(if $(TYPE),--type $(TYPE),)
-
-gemini-models: build-app
-> $(RUN) app gemini-models
 
 gold-export: build-app
 > $(RUN) app gold-export --kind $(KIND) --n $(N)

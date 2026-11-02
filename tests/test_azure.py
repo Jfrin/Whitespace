@@ -5,6 +5,8 @@ import pytest
 
 from whitespace.extract.azure import AzureExtractor
 from whitespace.extract.errors import ExtractorStop
+from whitespace.extract.run import extract_all
+from whitespace.models import Post
 
 TEXT = "I wish the game had a minimap."
 ITEM = {
@@ -99,3 +101,75 @@ def test_default_cli_requires_azure_credentials(monkeypatch, tmp_path, capsys):
     monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
     assert main(["extract"]) == 2
     assert "AZURE_OPENAI_API_KEY" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        {"code": "content_filter"},
+        {"innererror": {"code": "ResponsibleAIPolicyViolation"}},
+        {"message": "The response was filtered due to Azure's content management policy."},
+    ],
+)
+def test_content_filtered_single_post_is_skipped_and_cached(db, error):
+    calls = []
+
+    def handler(req):
+        calls.append(req)
+        return httpx.Response(400, json={"error": error})
+
+    ex = make(db, handler)
+    assert ex(TEXT) == [] and ex(TEXT) == []
+    assert len(calls) == 1 and ex.stats["filtered_posts"] == 1
+    assert json.loads(db.llm_cache_get(ex._key(TEXT)))["filtered"] is True
+
+
+def test_filtered_batch_recovers_other_posts_and_extraction_continues(db):
+    blocked = "This review triggers Azure's filter."
+    another = "An ordinary review with no specific requests."
+    for i, text in enumerate([TEXT, blocked, another]):
+        db.upsert_post(Post("s", str(i), "u", text, i))
+    for row in db.conn.execute("SELECT id FROM post").fetchall():
+        db.set_flags(row["id"], "en", {"is_dup": False, "is_low_effort": False})
+
+    calls = []
+
+    def handler(req):
+        body = json.loads(req.content)
+        content = body["messages"][1]["content"]
+        calls.append(content)
+        if blocked in content:
+            return httpx.Response(400, json={"error": {"code": "content_filter"}})
+        if content == TEXT:
+            return response({"items": [ITEM]})
+        if content.startswith('{"posts":'):
+            return response({"results": [{"id": 0, "items": []}]})
+        return response({"items": []})
+
+    ex = make(db, handler, batch_size=2)
+    stats = extract_all(db, ex, prefilter="all", english_only=False)
+    assert stats["candidates"] == 3 and stats["items"] == 1 and "stopped" not in stats
+    assert ex.stats["filtered_batches"] == 1 and ex.stats["filtered_posts"] == 1
+    assert db.count("want_item") == 1
+    assert len(calls) == 4  # blocked batch, two individual posts, then the next batch
+    assert ex(blocked) == [] and len(calls) == 4
+
+
+def test_filtered_completion_is_skipped(db):
+    ex = make(
+        db,
+        lambda req: httpx.Response(
+            200, json={"choices": [{"finish_reason": "content_filter", "message": {}}]}
+        ),
+    )
+    assert ex(TEXT) == [] and ex.stats["filtered_posts"] == 1
+
+
+@pytest.mark.parametrize(
+    "payload", [{"error": {"message": "bad request"}}, {"error": {"code": "invalid_api_key"}}, []]
+)
+def test_other_bad_requests_still_stop(db, payload):
+    ex = make(db, lambda req: httpx.Response(400, json=payload))
+    with pytest.raises(ExtractorStop, match="400"):
+        ex(TEXT)
+    assert ex.stats["filtered_posts"] == 0

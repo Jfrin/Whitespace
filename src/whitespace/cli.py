@@ -59,9 +59,16 @@ def cmd_extract(args: argparse.Namespace, settings: Settings) -> int:
     from whitespace.extract.gazetteer import load_index
     from whitespace.extract.run import extract_all
 
+    name = args.extractor or "azure"
+    if name == "rules" and args.languages == "all":
+        print(
+            "The offline rules extractor supports English only; omit --languages all "
+            "or use --extractor azure.",
+            file=sys.stderr,
+        )
+        return 2
     index = load_index(args.games, settings.data_dir / "apps.json")
     db = Database(settings.db_path)
-    name = args.extractor or "azure"
     if name == "azure":
         key = os.environ.get("AZURE_OPENAI_API_KEY")
         endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
@@ -103,42 +110,13 @@ def cmd_extract(args: argparse.Namespace, settings: Settings) -> int:
         print(stats)
         print(f"azure {model}: {extractor.stats}")
         return 1 if stats.get("stopped") else 0
-    if name == "gemini":
-        key = os.environ.get("GEMINI_API_KEY")
-        if not key:
-            print(
-                "GEMINI_API_KEY is not set. Get a free key at https://aistudio.google.com/apikey "
-                "and put it in .env (or use --extractor rules).",
-                file=sys.stderr,
-            )
-            return 2
-        from whitespace.extract.gemini import DEFAULT_MODEL, GeminiExtractor
-
-        model = args.model or os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
-        rpm = args.rpm or float(os.environ.get("GEMINI_RPM", "10"))
-        batch = args.batch_size or int(os.environ.get("GEMINI_BATCH_SIZE", "8"))
-        print(
-            f"gemini {model}: {rpm:g} requests/min, {batch} posts per request "
-            f"(~{60 / rpm:.0f}s between requests)",
-            file=sys.stderr,
-        )
-        with httpx.Client(timeout=60.0) as client:
-            extractor = GeminiExtractor(
-                db, key, model=model, client=client, rpm=rpm, index=index, batch_size=batch
-            )
-            stats = extract_all(
-                db,
-                extractor,
-                limit=args.limit,
-                redo=args.redo,
-                prefilter=args.prefilter or "all",
-                english_only=(args.languages or "all") == "english",
-            )
-        print(stats)
-        print(f"gemini {model}: {extractor.stats}")
-        return 1 if stats.get("stopped") else 0
     from whitespace.extract.nlp import RuleExtractor, build_nlp
 
+    print(
+        "Offline rules support English only; posts tagged as other languages are skipped, "
+        "not deleted.",
+        file=sys.stderr,
+    )
     extractor = RuleExtractor(build_nlp(index), index)
     stats = extract_all(
         db,
@@ -146,22 +124,9 @@ def cmd_extract(args: argparse.Namespace, settings: Settings) -> int:
         limit=args.limit,
         redo=args.redo,
         prefilter=args.prefilter or "cue",
-        english_only=(args.languages or "english") == "english",
+        english_only=True,
     )
     print(stats)
-    return 0
-
-
-def cmd_gemini_models(args: argparse.Namespace, settings: Settings) -> int:
-    key = os.environ.get("GEMINI_API_KEY")
-    if not key:
-        print("GEMINI_API_KEY is not set", file=sys.stderr)
-        return 2
-    from whitespace.extract.gemini import list_models
-
-    with httpx.Client(timeout=30.0) as client:
-        for name in list_models(key, client):
-            print(name)
     return 0
 
 
@@ -298,8 +263,13 @@ def main(argv: list[str] | None = None) -> int:
     cln.add_argument("--refresh", action="store_true", help="re-flag every post")
     cln.add_argument("--min-words", type=int, default=8, help="shorter posts are low-effort")
     cln.set_defaults(fn=cmd_clean)
-    ext = sub.add_parser("extract", help="extract wants (Azure Foundry, Gemini, or offline rules)")
-    ext.add_argument("--extractor", choices=["azure", "gemini", "rules"], default=None)
+    ext = sub.add_parser("extract", help="extract wants (Azure Foundry or offline rules)")
+    ext.add_argument(
+        "--extractor",
+        choices=["azure", "rules"],
+        default=None,
+        help="Azure (default), or offline rules (English only)",
+    )
     ext.add_argument("--model", default=None, help="deployment or model id")
     ext.add_argument("--rpm", type=float, default=None, help="requests/min (0 disables throttling)")
     ext.add_argument("--batch-size", type=int, default=None, help="posts per request (1 = off)")
@@ -307,16 +277,13 @@ def main(argv: list[str] | None = None) -> int:
         "--languages",
         choices=["all", "english"],
         default=None,
-        help="LLM extractors default to all languages, rules to english only",
+        help="Azure defaults to all languages; offline rules support English only",
     )
     ext.add_argument("--prefilter", choices=["cue", "all"], default=None)
     ext.add_argument("--games", default="config/games.yaml")
     ext.add_argument("--limit", type=int, default=None)
     ext.add_argument("--redo", action="store_true", help="delete all wants and re-extract")
     ext.set_defaults(fn=cmd_extract)
-    sub.add_parser("gemini-models", help="models your key can call").set_defaults(
-        fn=cmd_gemini_models
-    )
     cat = sub.add_parser("catalog", help="fetch genres for every game wants refer to")
     cat.add_argument("--max-age-days", type=int, default=30)
     cat.add_argument("--limit", type=int, default=None, help="max games to fetch this run")

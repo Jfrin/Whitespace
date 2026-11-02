@@ -1,16 +1,13 @@
+import hashlib
 import json
 
 import httpx
 import pytest
 
 from whitespace.extract.appid import AppIndex
+from whitespace.extract.azure import AzureExtractor
 from whitespace.extract.errors import ExtractorStop
-from whitespace.extract.gemini import (
-    PROMPT_VERSION,
-    GeminiExtractor,
-    list_models,
-    quote_in_text,
-)
+from whitespace.extract.llm import SCHEMA, SYSTEM, quote_in_text
 from whitespace.extract.run import extract_all
 from whitespace.extract.schema import WantItem
 from whitespace.models import Post
@@ -31,49 +28,25 @@ ITEM = {
 
 
 def reply(items):
-    return {"candidates": [{"content": {"parts": [{"text": json.dumps({"items": items})}]}}]}
+    return {
+        "choices": [{"finish_reason": "stop", "message": {"content": json.dumps({"items": items})}}]
+    }
 
 
 def make(db, handler, **kw):
     client = httpx.Client(transport=httpx.MockTransport(handler))
     sleeps: list[float] = []
-    ex = GeminiExtractor(
-        db, "KEY", model="gemini-test", client=client, rpm=0, sleep=sleeps.append, **kw
+    ex = AzureExtractor(
+        db,
+        "KEY",
+        "https://example.openai.azure.com",
+        model="test-model",
+        client=client,
+        rpm=0,
+        sleep=sleeps.append,
+        **kw,
     )
     return ex, sleeps
-
-
-def quota_429(per_day=False, retry="7s"):
-    details = [{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": retry}]
-    if per_day:
-        details.append(
-            {
-                "@type": "type.googleapis.com/google.rpc.QuotaFailure",
-                "violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}],
-            }
-        )
-    body = {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "details": details}}
-    return httpx.Response(429, json=body)
-
-
-def test_request_shape(db):
-    seen = {}
-
-    def handler(req: httpx.Request) -> httpx.Response:
-        seen["url"] = str(req.url)
-        seen["key"] = req.headers["x-goog-api-key"]
-        seen["body"] = json.loads(req.content)
-        return httpx.Response(200, json=reply([]))
-
-    ex, _ = make(db, handler)
-    ex(TEXT)
-    assert seen["url"].endswith("/models/gemini-test:generateContent") and seen["key"] == "KEY"
-    body = seen["body"]
-    cfg = body["generationConfig"]
-    assert cfg["responseMimeType"] == "application/json" and cfg["temperature"] == 0
-    assert cfg["responseJsonSchema"]["required"] == ["items"]
-    assert body["contents"][0]["parts"][0]["text"] == TEXT
-    assert "systemInstruction" in body
 
 
 def test_parses_validates_and_resolves_appids(db):
@@ -82,7 +55,7 @@ def test_parses_validates_and_resolves_appids(db):
     [item] = ex(TEXT)
     assert item.want_summary == "checkpoints" and item.request_type == "feature_wish"
     assert item.referenced_games == ["Hades"] and item.referenced_appids == [1145360]
-    assert ex.version == f"{PROMPT_VERSION}:gemini-test" and ex.stats["items"] == 1
+    assert ex.version == "azure-v3:test-model" and ex.stats["items"] == 1
 
 
 def test_invented_quotes_and_off_schema_items_are_dropped(db):
@@ -108,17 +81,14 @@ def test_responses_are_cached_across_calls_and_instances(db):
     assert len(calls) == 1 and ex.stats["cache_hits"] == 1 and ex2.stats["cache_hits"] == 1
 
 
-def test_per_minute_429_waits_the_advertised_delay_then_retries(db):
-    answers = iter([quota_429(retry="7s"), httpx.Response(200, json=reply([ITEM]))])
-    ex, sleeps = make(db, lambda req: next(answers))
-    assert len(ex(TEXT)) == 1
-    assert sleeps == [8.0] and ex.stats["retries"] == 1
-
-
-def test_daily_quota_429_stops_the_run(db):
-    ex, _ = make(db, lambda req: quota_429(per_day=True))
-    with pytest.raises(ExtractorStop, match="daily quota"):
-        ex(TEXT)
+def test_azure_cache_key_remains_compatible(db):
+    ex, _ = make(db, lambda req: httpx.Response(500))
+    legacy_key = hashlib.sha1(
+        f"azure-v3:test-model|https://example.openai.azure.com/openai/v1|{TEXT}".encode()
+    ).hexdigest()
+    db.llm_cache_put(legacy_key, "test-model", json.dumps({"items": [ITEM]}))
+    assert ex(TEXT)[0].want_summary == "checkpoints"
+    assert ex.stats["cache_hits"] == 1 and ex.stats["calls"] == 0
 
 
 def test_server_errors_retry_then_stop(db):
@@ -129,7 +99,7 @@ def test_server_errors_retry_then_stop(db):
         return httpx.Response(503)
 
     ex, _ = make(db, handler)
-    with pytest.raises(ExtractorStop, match="giving up"):
+    with pytest.raises(ExtractorStop, match="503"):
         ex(TEXT)
     assert len(calls) == 3  # first try + 2 retries
 
@@ -147,21 +117,12 @@ def test_auth_and_unknown_model_errors_stop_immediately(db):
     assert len(calls) == 1
 
 
-def test_blocked_prompt_is_empty_and_cached(db):
-    calls = []
-
-    def handler(req):
-        calls.append(1)
-        return httpx.Response(200, json={"promptFeedback": {"blockReason": "SAFETY"}})
-
-    ex, _ = make(db, handler)
-    assert ex(TEXT) == [] and ex(TEXT) == [] and len(calls) == 1
-
-
 def test_unparseable_output_is_empty_and_not_cached(db):
     answers = iter(
         [
-            httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": "oops"}]}}]}),
+            httpx.Response(
+                200, json={"choices": [{"finish_reason": "stop", "message": {"content": "oops"}}]}
+            ),
             httpx.Response(200, json=reply([ITEM])),
         ]
     )
@@ -174,7 +135,7 @@ def test_markup_is_stripped_before_sending_and_quotes_still_verify(db):
     sent = {}
 
     def handler(req):
-        sent["text"] = json.loads(req.content)["contents"][0]["parts"][0]["text"]
+        sent["text"] = json.loads(req.content)["messages"][1]["content"]
         item = {**ITEM, "quote": "I wish it had co-op"}
         return httpx.Response(200, json=reply([item]))
 
@@ -190,8 +151,20 @@ def test_quote_matching_is_forgiving_about_case_spacing_and_curly_quotes():
     assert not quote_in_text("", text) and not quote_in_text("totally different", text)
 
 
+def test_cli_rejects_removed_extractor_and_command(capsys):
+    from whitespace.cli import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(["extract", "--extractor", "gemini"])
+    assert exc.value.code == 2
+    assert "invalid choice" in capsys.readouterr().err
+    with pytest.raises(SystemExit) as exc:
+        main(["gemini-models"])
+    assert exc.value.code == 2
+
+
 class FakeLLM:
-    """Stands in for GeminiExtractor: stops the run on the third call."""
+    """Stands in for an extractor: stops the run on the third call."""
 
     version = "fake-v9"
 
@@ -223,30 +196,6 @@ def test_extract_all_all_mode_sends_untriggered_posts_and_keeps_progress_on_stop
     assert extract_all(db, lambda t: [], prefilter="cue")["candidates"] == 0
 
 
-def test_list_models_returns_only_generate_capable_ids():
-    body = {
-        "models": [
-            {
-                "name": "models/gemini-2.5-flash-lite",
-                "supportedGenerationMethods": ["generateContent"],
-            },
-            {"name": "models/text-embedding", "supportedGenerationMethods": ["embedContent"]},
-        ]
-    }
-    client = httpx.Client(transport=httpx.MockTransport(lambda req: httpx.Response(200, json=body)))
-    assert list_models("KEY", client) == ["gemini-2.5-flash-lite"]
-
-
-def test_cli_extract_without_a_key_explains_itself(monkeypatch, tmp_path, capsys):
-    from whitespace.cli import main
-
-    monkeypatch.setenv("WHITESPACE_DATA_DIR", str(tmp_path))
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    assert main(["extract", "--extractor", "gemini"]) == 2
-    assert "aistudio.google.com" in capsys.readouterr().err
-    assert main(["gemini-models"]) == 2
-
-
 TEXT_B = "The game has no map. I would love a minimap, honestly."
 ITEM_B = {
     "request_type": "feature_wish",
@@ -261,11 +210,15 @@ ITEM_B = {
 
 def batch_reply(per_id):
     results = [{"id": k, "items": v} for k, v in per_id.items()]
-    return {"candidates": [{"content": {"parts": [{"text": json.dumps({"results": results})}]}}]}
+    return {
+        "choices": [
+            {"finish_reason": "stop", "message": {"content": json.dumps({"results": results})}}
+        ]
+    }
 
 
 def sent_ids(req):
-    text = json.loads(req.content)["contents"][0]["parts"][0]["text"]
+    text = json.loads(req.content)["messages"][1]["content"]
     return [p["id"] for p in json.loads(text)["posts"]]
 
 
@@ -280,8 +233,8 @@ def test_batch_sends_several_posts_in_one_request_and_caches_each(db):
     [a, b] = ex.extract_batch([TEXT, TEXT_B])
     assert a[0].want_summary == "checkpoints" and b[0].want_summary == "minimap"
     assert len(seen) == 1
-    assert "results" in seen[0]["generationConfig"]["responseJsonSchema"]["properties"]
-    assert "BATCH MODE" in seen[0]["systemInstruction"]["parts"][0]["text"]
+    assert "results" in seen[0]["response_format"]["json_schema"]["schema"]["properties"]
+    assert "BATCH MODE" in seen[0]["messages"][0]["content"]
     assert len(ex(TEXT)) == 1 and len(seen) == 1  # single-post call hits the cache
 
 
@@ -335,7 +288,9 @@ def test_posts_missing_from_the_response_are_retried_next_time(db):
 def test_unparseable_batch_falls_back_to_one_request_per_post(db):
     answers = iter(
         [
-            httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": "oops"}]}}]}),
+            httpx.Response(
+                200, json={"choices": [{"finish_reason": "stop", "message": {"content": "oops"}}]}
+            ),
             httpx.Response(200, json=reply([ITEM])),
             httpx.Response(200, json=reply([ITEM_B])),
         ]
@@ -372,8 +327,6 @@ def test_extract_all_sends_groups_and_keeps_finished_groups_when_stopped(db):
 
 
 def test_prompt_and_schema_know_about_dislikes_and_ban_vague_summaries():
-    from whitespace.extract.gemini import SCHEMA, SYSTEM
-
     enum = SCHEMA["properties"]["items"]["items"]["properties"]["request_type"]["enum"]
     assert "dislike" in enum and "dislike" in SYSTEM
     assert 'Never write "better X"' in SYSTEM and "0.4: only sentiment" in SYSTEM
@@ -393,8 +346,6 @@ def test_a_dislike_item_passes_validation_and_is_kept(db):
 
 
 def test_prompt_handles_any_language_and_english_summaries():
-    from whitespace.extract.gemini import SYSTEM
-
     assert "any language" in SYSTEM and "write every want_summary in English" in SYSTEM
 
 
