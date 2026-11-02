@@ -83,6 +83,33 @@ def test_cli_gold_untriggered_kind(monkeypatch, tmp_path, capsys):
     assert '"wish_rate": null' in capsys.readouterr().out
 
 
+def test_cli_rules_gold_uses_labeled_posts_without_writing_database(monkeypatch, tmp_path, capsys):
+    from whitespace import gold
+    from whitespace.extract import nlp
+
+    monkeypatch.setenv("WHITESPACE_DATA_DIR", str(tmp_path))
+    assert main(["gold-export", "--kind", "rules"]) == 0
+    path = tmp_path / "gold_rules.csv"
+    assert path.exists()
+    gold.write_csv(
+        path,
+        gold.RULES_FIELDS,
+        [
+            {
+                "post_id": 1,
+                "contains_want": "y",
+                "source": "s",
+                "language": "english",
+                "text": "I wish it had a map",
+            }
+        ],
+    )
+    monkeypatch.setattr(nlp, "build_nlp", lambda index: None)
+    monkeypatch.setattr(nlp, "RuleExtractor", lambda model, index: lambda text: [object()])
+    assert main(["gold-score", "--kind", "rules"]) == 0
+    assert '"true_positive": 1' in capsys.readouterr().out
+
+
 def test_cli_stats_and_sample_show_languages_and_filter_by_them(monkeypatch, tmp_path, capsys):
     from whitespace.models import Post
     from whitespace.storage import Database

@@ -22,17 +22,34 @@ for meaning extraction. Azure usage may incur charges. No usernames are stored a
 tooling to measure extraction quality. Clustering and gap scoring are not built yet.
 See `PLAN.md` for the full checklist.
 
-## Web UI (Docker)
+## Read-only demo (Docker)
 
-Run `docker compose --profile dashboard up --build dashboard` (or `make dashboard`), then open
+Run `docker compose --profile public-demo up --build public-demo`, then open
+**http://localhost:8502**. This separate explorer uses only fictional examples from
+`demo/public.json`; its counts and quotes are not real player feedback. Filter by game, genre,
+request type or confidence. It does not run the pipeline, use API credentials, or access `./data`.
+The demo container packages only the public app and example data. It is not yet an Azure deployment.
+Review any real dataset and source terms before publishing it.
+
+## Local pipeline console (Docker)
+
+First create `.env` from `.env.example` if it does not exist. Run
+`docker compose --profile dashboard up --build dashboard` (or `make dashboard`), then open
 **http://localhost:8501**. Enter Steam app IDs and your Azure endpoint, API key and deployment in
 the sidebar, then click **Run full pipeline**. You can also run individual stages, monitor progress,
 and view extracted wants. Select **Rules** for offline English extraction without an Azure key;
 posts tagged as other languages are skipped, not deleted.
 
-Browser-entered settings last for the session and do not overwrite configuration files. You can
-instead set Azure defaults in `.env`. The interface is bound to localhost and is intended for local
-use only; it has no user authentication. Data is saved in `./data`.
+The **Results** explorer searches all extracted wants and supports combined game, genre, subject,
+request-type, and minimum-confidence filters. Results are paginated, newest first, with source quotes
+and links when available. Confidence is a heuristic, not a probability. Steam user-defined tags are
+not collected yet; the catalog's existing tags are store categories.
+
+Settings apply to the browser session until you click **Save settings**, which saves Steam IDs in
+`config/sources.yaml` and the remaining settings in `.env`. The Azure key is stored in plaintext;
+keep `.env` private. Docker Compose must be recreated for other containers to receive new `.env`
+values. The interface is bound to localhost and is intended for local use only; it has no user
+authentication. Data is saved in `./data`.
 
 ## Command-line quick start (Docker)
 
@@ -110,7 +127,8 @@ Without make: `docker compose run --rm app sample --lang non-english --n 20`.
 | `extract/` | `prefilter.py` (regex candidates), `nlp.py` (spaCy rules), `rules.py` (pure-Python lexicons), `gazetteer.py` + `appid.py` (game names to appids), `schema.py` (validation) |
 | `cluster/` | `embed.py` (UMAP + HDBSCAN, `ml` extra), `drift.py` (match clusters across runs), `text.py` (genre-prefixed text to embed) |
 | `score/gap.py` | Versioned gap formula, all weights in one dataclass |
-| `serve/app.py` | Streamlit dashboard |
+| `serve/app.py` | Local Streamlit pipeline console |
+| `serve/public.py` | Separate read-only demo explorer; fictional data in `demo/public.json` |
 | `gold.py` | Samples extractions to label by hand and scores precision / miss rate from the labeled CSV |
 | `storage.py` | SQLite schema, raw store, automatic migrations for older databases |
 | `tests/` | Offline tests: HTTP mocked with `httpx.MockTransport`, HTML from fixtures |
@@ -121,6 +139,7 @@ Without make: `docker compose run --rm app sample --lang non-english --n 20`.
 - `prod`: the `whitespace` CLI. `--build-arg WITH_BROWSERS=1` adds Playwright browsers for
   `DynamicFetcher`/`StealthyFetcher` sources (large; most sources don't need it).
 - `dashboard`: local Streamlit pipeline console on :8501, reads and writes `./data`.
+- `public-demo`: isolated Streamlit explorer with packaged fictional data, on :8502 locally.
 
 ## CI
 
@@ -178,7 +197,7 @@ How it behaves:
 - **What it sends:** only public review text, no usernames. Review your Azure deployment's data
   handling and pricing before sending data.
 - **Comparing extractors:** every want records `extractor_version` (e.g. `azure-v3:gpt-4.1-mini`
-  or `rules-v2`). `gold-export` includes the column and `gold-score` reports `by_extractor`, so label
+  or `rules-v3`). `gold-export` includes the column and `gold-score` reports `by_extractor`, so label
   a sample from each and compare precision directly.
 
 ## Rules extractor (offline fallback)
@@ -245,6 +264,28 @@ which phrasings to add (e.g. "needs more", "should have", "lacks", "no way to").
 below the 0.6 confidence threshold (so you can see whether the threshold is earning its keep).
 `--kind missed` reports how often a trigger post that produced nothing should have produced a want.
 Sampling is seeded (`--seed`), so exports are reproducible.
+
+#### Evaluating offline rules on English posts
+
+The `rules` gold set samples cleaned English-tagged posts whether or not they already have wants.
+This avoids treating unprocessed posts as extractor misses. It includes posts without cue phrases,
+so the score measures the default cue prefilter as well as the extractor.
+
+```powershell
+docker compose --profile pipeline build app
+docker compose run --rm app gold-export --kind rules --n 300   # -> data/gold_rules.csv
+# Label contains_want y/n for whether the full post contains actionable game feedback.
+# Save as CSV UTF-8, then score without changing the database:
+docker compose run --rm app gold-score --kind rules
+```
+
+The output reports post-level detection precision and recall, confusion counts, and IDs of false
+positives and false negatives. A detected post may contain wrong or additional missed items, so
+these are **not item-level precision or recall**. Label `gold_items.csv` separately for item-level
+precision. The sample excludes duplicate and low-effort posts, so it does not measure those filters.
+It contains full review text: keep it private. Re-exporting to the same path overwrites the CSV and
+its labels; use `--out` to preserve earlier sets. `tests/fixtures/rules_gold_english.csv` is a small
+synthetic regression set, not an estimate of real-world quality.
 
 ### Re-running after rule changes
 

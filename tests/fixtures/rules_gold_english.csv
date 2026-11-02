@@ -1,0 +1,21 @@
+post_id,contains_want,source,language,text
+synthetic-01,y,synthetic,english,I wish it had a photo mode.
+synthetic-02,y,synthetic,english,There are no fast restarts.
+synthetic-03,y,synthetic,english,The game lacks checkpoints.
+synthetic-04,y,synthetic,english,You cannot skip the dialogue.
+synthetic-05,y,synthetic,english,There is not enough content.
+synthetic-06,y,synthetic,english,I wish it had less grind.
+synthetic-07,y,synthetic,english,I wish it had more grind.
+synthetic-08,y,synthetic,english,I wish it had no checkpoints.
+synthetic-09,y,synthetic,english,I wish it had co-op but there are no checkpoints.
+synthetic-10,y,synthetic,english,There are no checkpoints but I wish it had co-op.
+synthetic-11,y,synthetic,english,I wish the game had a map and it lacks checkpoints.
+synthetic-12,y,synthetic,english,I want a farming sim with co-op but no energy timer.
+synthetic-13,n,synthetic,english,Great game played for 200 hours.
+synthetic-14,n,synthetic,english,I wish I had more time.
+synthetic-15,n,synthetic,english,The game has no bugs.
+synthetic-16,n,synthetic,english,There is no lack of checkpoints.
+synthetic-17,n,synthetic,english,The game does not lack checkpoints.
+synthetic-18,n,synthetic,english,Checkpoints are not missing.
+synthetic-19,n,synthetic,english,There is no shortage of checkpoints.
+synthetic-20,n,synthetic,english,I want a refund.

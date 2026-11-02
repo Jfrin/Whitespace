@@ -2,13 +2,17 @@
 
 import os
 import sqlite3
+from math import ceil
+from pathlib import Path
 from urllib.parse import urlparse
 
 import pandas as pd
 import streamlit as st
 
 from whitespace.config import Settings, load_sources
+from whitespace.serve.explorer import Filters, count, options, page, safe_source_url, string_list
 from whitespace.serve.jobs import JobRunner, commands, parse_appids
+from whitespace.serve.settings import read_settings, save_settings
 from whitespace.storage import Database
 
 st.set_page_config(page_title="Whitespace", page_icon="🎮", layout="wide")
@@ -22,9 +26,26 @@ def runner() -> JobRunner:
 st.title("Whitespace")
 st.caption("Find what players want. Run the pipeline and explore the results here.")
 
+env_path = Path(os.environ.get("WHITESPACE_UI_ENV_PATH", ".env"))
+sources_path = Path(os.environ.get("WHITESPACE_UI_SOURCES_PATH", "config/sources.yaml"))
+saved = read_settings(env_path)
+
+
+def default(name: str, fallback: str = "") -> str:
+    return saved.get(name, os.environ.get(name, fallback))
+
+
+def number_default(name: str, fallback: int, maximum: int | None = None) -> int:
+    try:
+        number = int(default(name, str(fallback)))
+        return max(1, min(number, maximum)) if maximum else max(1, number)
+    except ValueError:
+        return fallback
+
+
 with st.sidebar:
     st.header("Settings")
-    default_appids = load_sources()["steam_reviews"].options.get("appids", [])
+    default_appids = load_sources(sources_path)["steam_reviews"].options.get("appids", [])
     appids_input = st.text_input(
         "Steam app IDs",
         value=", ".join(map(str, default_appids)),
@@ -32,30 +53,73 @@ with st.sidebar:
     )
     contact = st.text_input(
         "Contact email",
-        value=os.environ.get("WHITESPACE_CONTACT", ""),
+        value=default("WHITESPACE_CONTACT"),
         help="Included in requests to source sites.",
     )
-    extractor = st.selectbox("Extractor", ["azure", "rules"], format_func=str.title)
-    limit = st.number_input("Maximum posts to extract", min_value=1, value=100, step=50)
+    extractor_options = ["azure", "rules"]
+    saved_extractor = default("WHITESPACE_UI_EXTRACTOR", "azure")
+    extractor = st.selectbox(
+        "Extractor",
+        extractor_options,
+        index=extractor_options.index(saved_extractor)
+        if saved_extractor in extractor_options
+        else 0,
+        format_func=str.title,
+    )
+    limit = st.number_input(
+        "Maximum posts to extract",
+        min_value=1,
+        value=number_default("WHITESPACE_UI_LIMIT", 100),
+        step=50,
+    )
     if extractor == "azure":
-        endpoint = st.text_input(
-            "Azure endpoint", value=os.environ.get("AZURE_OPENAI_ENDPOINT", "")
-        )
+        endpoint = st.text_input("Azure endpoint", value=default("AZURE_OPENAI_ENDPOINT"))
         api_key = st.text_input(
-            "Azure API key", value=os.environ.get("AZURE_OPENAI_API_KEY", ""), type="password"
+            "Azure API key", value=default("AZURE_OPENAI_API_KEY"), type="password"
         )
         deployment = st.text_input(
-            "Deployment name", value=os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4.1-mini")
+            "Deployment name", value=default("AZURE_OPENAI_DEPLOYMENT", "gpt-4.1-mini")
         )
-        rpm = st.number_input("Requests per minute", min_value=1, value=10)
-        batch = st.number_input("Posts per request", min_value=1, max_value=100, value=8)
+        rpm = st.number_input(
+            "Requests per minute", min_value=1, value=number_default("AZURE_OPENAI_RPM", 10)
+        )
+        batch = st.number_input(
+            "Posts per request",
+            min_value=1,
+            max_value=100,
+            value=number_default("AZURE_OPENAI_BATCH_SIZE", 8, 100),
+        )
         st.caption("Azure requests may incur charges.")
     else:
         st.caption(
             "Rules run offline and only process English posts; "
             "other languages are skipped, not deleted."
         )
-    st.caption("Changes apply to this browser session; they don't modify .env or config files.")
+    if st.button("Save settings"):
+        try:
+            ids = parse_appids(appids_input)
+            updates = {
+                "WHITESPACE_CONTACT": contact.strip(),
+                "WHITESPACE_UI_EXTRACTOR": extractor,
+                "WHITESPACE_UI_LIMIT": str(limit),
+            }
+            if extractor == "azure":
+                updates.update(
+                    {
+                        "AZURE_OPENAI_ENDPOINT": endpoint.strip(),
+                        "AZURE_OPENAI_API_KEY": api_key.strip(),
+                        "AZURE_OPENAI_DEPLOYMENT": deployment.strip(),
+                        "AZURE_OPENAI_RPM": str(rpm),
+                        "AZURE_OPENAI_BATCH_SIZE": str(batch),
+                    }
+                )
+            save_settings(env_path, sources_path, ids, updates)
+            st.success("Settings saved to .env and config/sources.yaml.")
+        except (OSError, ValueError) as exc:
+            st.error(f"Could not save settings: {exc}")
+    st.caption(
+        "Save settings writes to .env and config/sources.yaml. The API key is stored in plaintext."
+    )
 
 job = runner()
 
@@ -131,17 +195,70 @@ try:
             strict=True,
         ):
             col.metric(label, db.count(table))
-        wants = pd.read_sql_query(
-            "SELECT w.want_summary AS want, w.request_type AS type, w.subject, w.quote, "
-            "w.confidence, w.context_genres AS genres, p.lang AS language "
-            "FROM want_item w JOIN post p ON p.id = w.post_id ORDER BY w.id DESC LIMIT 100",
-            db.conn,
-        )
-        if wants.empty:
+        choices = options(db.conn)
+        total = count(db.conn, Filters())
+        if not total:
             st.info("No wants yet. Run the pipeline or start with Ingest, Clean, and Extract.")
         else:
-            st.caption("Most recent 100 extracted wants and their source quotes.")
-            st.dataframe(wants, use_container_width=True, hide_index=True)
+            st.caption("Filter all extracted items. Confidence is a heuristic, not a probability.")
+            search = st.text_input("Search summaries and quotes")
+            left, right = st.columns(2)
+            games = left.multiselect(
+                "Game", list(choices["games"]), format_func=choices["games"].get
+            )
+            genres = right.multiselect("Genre / game type", choices["genres"])
+            subjects = left.multiselect("Subject", choices["subjects"])
+            types = right.multiselect("Request type", choices["request_types"])
+            confidence = st.slider("Minimum confidence", 0.0, 1.0, 0.0, 0.1)
+            st.caption("Steam user-defined tags are not available yet.")
+            filters = Filters(games, genres, subjects, types, search, confidence)
+            matches = count(db.conn, filters)
+            st.caption(f"{matches:,} matching extracted items out of {total:,} total")
+            if not matches:
+                st.info("No results match these filters.")
+            else:
+                page_size = 25
+                pages = ceil(matches / page_size)
+                st.session_state["results_page"] = min(
+                    st.session_state.get("results_page", 1), pages
+                )
+                current = st.number_input(
+                    "Page",
+                    min_value=1,
+                    max_value=pages,
+                    key="results_page",
+                    help=f"{page_size} items per page, newest first.",
+                )
+                for item in page(db.conn, filters, current, page_size):
+                    with st.container(border=True):
+                        st.subheader(item["want_summary"] or "Unknown summary")
+                        game = item["game_name"] or (
+                            f"Unknown game ({item['game_appid']})"
+                            if item["game_appid"]
+                            else "Unknown game"
+                        )
+                        genre_text = (
+                            ", ".join(string_list(item["context_genres"])) or "Unknown genre"
+                        )
+                        st.caption(f"{game} · {genre_text}")
+                        conf = (
+                            f"{item['confidence']:.2f}"
+                            if item["confidence"] is not None
+                            else "unknown"
+                        )
+                        st.caption(
+                            f"{item['request_type'] or 'Unknown type'} · "
+                            f"{item['subject'] or 'Unknown subject'} · confidence {conf} · "
+                            f"{item['extractor_version'] or 'Unknown extractor'}"
+                        )
+                        st.text(item["quote"] or "Quote unavailable")
+                        references = string_list(item["referenced_games"])
+                        if references:
+                            st.caption("Compared with: " + ", ".join(references))
+                        if url := safe_source_url(item["url"]):
+                            st.link_button("Source", url)
+                        else:
+                            st.caption("Source link unavailable")
         niches = pd.read_sql_query(
             "SELECT c.name, c.size, n.demand, n.dissatisfaction, n.supply_pressure, n.gap_score "
             "FROM niche_score n JOIN cluster c ON c.id = n.cluster_id ORDER BY n.gap_score DESC",

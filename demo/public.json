@@ -1,0 +1,51 @@
+{
+  "label": "Synthetic example data",
+  "description": "All games, quotes and results below are fictional examples, not player reviews or measured demand.",
+  "items": [
+    {
+      "game": "Hollow Orchard",
+      "genres": ["Simulation", "Adventure"],
+      "request_type": "feature_wish",
+      "subject": "mechanic",
+      "summary": "shared farm progression",
+      "quote": "I wish friends could progress on the same farm together.",
+      "confidence": 0.9
+    },
+    {
+      "game": "Hollow Orchard",
+      "genres": ["Simulation", "Adventure"],
+      "request_type": "complaint",
+      "subject": "ux",
+      "summary": "clearer crafting recipes",
+      "quote": "The crafting recipes are hard to find in the menus.",
+      "confidence": 0.7
+    },
+    {
+      "game": "Clockwork Depths",
+      "genres": ["Action", "Roguelike"],
+      "request_type": "feature_wish",
+      "subject": "ux",
+      "summary": "save between runs",
+      "quote": "I wish I could save and continue between runs.",
+      "confidence": 0.9
+    },
+    {
+      "game": "Clockwork Depths",
+      "genres": ["Action", "Roguelike"],
+      "request_type": "complaint",
+      "subject": "difficulty",
+      "summary": "less repetitive early encounters",
+      "quote": "The first encounters feel too repetitive after a few runs.",
+      "confidence": 0.7
+    },
+    {
+      "game": "Lantern Atlas",
+      "genres": ["Adventure", "Puzzle"],
+      "request_type": "feature_wish",
+      "subject": "ux",
+      "summary": "optional puzzle hints",
+      "quote": "An optional hint system would help when I get stuck.",
+      "confidence": 0.9
+    }
+  ]
+}

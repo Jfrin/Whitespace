@@ -327,6 +327,8 @@ NON_DESIGN_TARGETS = {
     "value",
     "longer",
     "luck",
+    "lack",
+    "shortage",
 }
 GENERIC_TARGETS = {"game", "games", "one", "thing", "things", "something", "anything", "it", ""}
 

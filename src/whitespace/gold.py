@@ -11,9 +11,12 @@ from __future__ import annotations
 
 import csv
 import random
+from collections.abc import Callable
 from pathlib import Path
 
 from whitespace.extract.prefilter import is_any_candidate
+from whitespace.extract.rules import ENGLISH
+from whitespace.extract.schema import WantItem
 from whitespace.storage import Database
 
 ITEM_FIELDS = [
@@ -31,6 +34,7 @@ ITEM_FIELDS = [
     "post_excerpt",
 ]
 MISSED_FIELDS = ["post_id", "should_extract", "source", "text_excerpt"]
+RULES_FIELDS = ["post_id", "contains_want", "source", "language", "text"]
 
 _YES = {"y", "yes", "1", "true", "t"}
 _NO = {"n", "no", "0", "false", "f"}
@@ -91,6 +95,69 @@ def sample_missed(db: Database, n: int, seed: int = 42) -> list[dict]:
         }
         for r in chosen
     ]
+
+
+def sample_rules_posts(db: Database, n: int, seed: int = 42) -> list[dict]:
+    """Sample eligible English posts regardless of whether any extractor produced wants."""
+    rows = db.conn.execute(
+        "SELECT id, source, lang, text FROM post "
+        "WHERE json_extract(flags,'$.is_dup') = 0 "
+        "AND json_extract(flags,'$.is_low_effort') = 0 ORDER BY id"
+    ).fetchall()
+    english = [r for r in rows if (r["lang"] or "").strip().lower() in ENGLISH]
+    chosen = random.Random(seed).sample(english, min(n, len(english)))
+    return [
+        {
+            "post_id": r["id"],
+            "contains_want": "",
+            "source": r["source"],
+            "language": r["lang"],
+            "text": r["text"] or "",
+        }
+        for r in chosen
+    ]
+
+
+def score_rules_posts(rows: list[dict], extractor: Callable[[str], list[WantItem]]) -> dict:
+    """Post-level detection metrics, including the same cue prefilter as the rules pipeline.
+
+    A detected post may still contain an incorrect item or additional missed wants; this is not
+    item-level precision or recall.
+    """
+    counts = {"true_positive": 0, "false_positive": 0, "false_negative": 0, "true_negative": 0}
+    errors = []
+    unlabeled = 0
+    for row in rows:
+        expected = parse_label(row.get("contains_want"))
+        if expected is None:
+            unlabeled += 1
+            continue
+        text = row.get("text") or ""
+        found = extractor(text) if is_any_candidate(text) else []
+        detected = bool(found)
+        outcome = (
+            "true_positive"
+            if expected and detected
+            else "false_negative"
+            if expected
+            else "false_positive"
+            if detected
+            else "true_negative"
+        )
+        counts[outcome] += 1
+        if outcome in {"false_positive", "false_negative"}:
+            errors.append({"post_id": row.get("post_id"), "outcome": outcome})
+    tp, fp, fn = counts["true_positive"], counts["false_positive"], counts["false_negative"]
+    return {
+        "unit": "post_detection",
+        "extractor_version": getattr(extractor, "version", None),
+        "labeled": sum(counts.values()),
+        "unlabeled": unlabeled,
+        **counts,
+        "precision": round(tp / (tp + fp), 3) if tp + fp else None,
+        "recall": round(tp / (tp + fn), 3) if tp + fn else None,
+        "errors": errors,
+    }
 
 
 def write_csv(path: str | Path, fields: list[str], rows: list[dict]) -> None:
@@ -195,4 +262,5 @@ KINDS = {
     "items": ("gold_items.csv", ITEM_FIELDS, "correct"),
     "missed": ("gold_missed.csv", MISSED_FIELDS, "should_extract"),
     "untriggered": ("gold_untriggered.csv", UNTRIGGERED_FIELDS, "contains_wish"),
+    "rules": ("gold_rules.csv", RULES_FIELDS, "contains_want"),
 }

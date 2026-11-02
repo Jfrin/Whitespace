@@ -107,7 +107,55 @@ def test_sample_untriggered_is_the_complement_of_missed(db):
 def test_score_untriggered_and_kind_table():
     rows = [{"contains_wish": v} for v in ("y", "n", "n", "")]
     assert gold.score_untriggered(rows) == {"labeled": 3, "unlabeled": 1, "wish_rate": 0.333}
-    assert set(gold.KINDS) == {"items", "missed", "untriggered"}
+    assert set(gold.KINDS) == {"items", "missed", "untriggered", "rules"}
+
+
+def test_rules_sample_is_english_and_independent_of_existing_wants(db, add_want):
+    add_want("already-extracted")
+    db.upsert_post(Post("s", "english", "u", "I wish it had a map.\nMore detail.", 1))
+    db.upsert_post(Post("s", "russian", "u", "review", 2))
+    db.upsert_post(Post("s", "unknown", "u", "unknown", 3))
+    db.upsert_post(Post("s", "duplicate", "u", "duplicate", 4))
+    for row in db.conn.execute("SELECT id, source_id FROM post").fetchall():
+        lang = {"russian": "russian", "unknown": None}.get(row["source_id"], "en")
+        db.set_flags(
+            row["id"], lang, {"is_dup": row["source_id"] == "duplicate", "is_low_effort": False}
+        )
+    rows = gold.sample_rules_posts(db, 10, seed=7)
+    assert len(rows) == 2 and all(r["contains_want"] == "" for r in rows)
+    assert {r["text"] for r in rows} == {
+        "text already-extracted",
+        "I wish it had a map.\nMore detail.",
+    }
+    assert gold.sample_rules_posts(db, 1, seed=7) == gold.sample_rules_posts(db, 1, seed=7)
+
+
+def test_rules_post_score_includes_prefilter_and_ignores_unlabeled():
+    rows = [
+        {"post_id": "tp", "contains_want": "y", "text": "I wish for a map"},
+        {"post_id": "fn", "contains_want": "y", "text": "More maps please"},
+        {"post_id": "fp", "contains_want": "n", "text": "I wish for a refund"},
+        {"post_id": "tn", "contains_want": "n", "text": "Great game"},
+        {"post_id": "blank", "contains_want": "", "text": "I wish for a map"},
+    ]
+    seen = []
+
+    def extractor(text):
+        seen.append(text)
+        return [object()]
+
+    result = gold.score_rules_posts(rows, extractor)
+    assert result["labeled"] == 4 and result["unlabeled"] == 1
+    assert (result["true_positive"], result["false_positive"]) == (1, 1)
+    assert (result["true_negative"], result["false_negative"]) == (1, 1)
+    assert result["precision"] == 0.5 and result["recall"] == 0.5
+    assert {error["post_id"] for error in result["errors"]} == {"fn", "fp"}
+    assert len(seen) == 2  # unlabeled and untriggered posts never reach the extractor
+
+
+def test_rules_score_no_labels_has_no_metrics():
+    result = gold.score_rules_posts([{"contains_want": "", "text": "I wish"}], lambda _: [])
+    assert result["precision"] is None and result["recall"] is None
 
 
 def test_read_csv_survives_a_non_utf8_file(tmp_path):

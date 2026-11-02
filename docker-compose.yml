@@ -4,7 +4,7 @@ services:
   test:
     profiles: [dev]
     build: {context: ., target: dev}
-    volumes: ["./src:/app/src", "./tests:/app/tests", "./config:/app/config"]
+    volumes: ["./src:/app/src", "./tests:/app/tests", "./config:/app/config", "./demo:/app/demo:ro"]
     command: pytest
 
   lint:
@@ -34,5 +34,16 @@ services:
       - path: .env
         required: false
     environment: {WHITESPACE_DATA_DIR: /app/data}
-    volumes: ["./data:/app/data", "./config:/app/config:ro"]
+    volumes:
+      - "./data:/app/data"
+      - "./config:/app/config"
+      - type: bind
+        source: ./.env
+        target: /app/.env
+        bind: {create_host_path: false}
     ports: ["127.0.0.1:8501:8501"]
+
+  public-demo:
+    profiles: [public-demo]
+    build: {context: ., target: public-demo}
+    ports: ["127.0.0.1:8502:8501"]

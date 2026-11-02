@@ -1,5 +1,7 @@
 """spaCy extraction. Skipped when spaCy / the model isn't installed (they are in the dev image)."""
 
+from pathlib import Path
+
 import pytest
 
 spacy = pytest.importorskip("spacy")
@@ -7,6 +9,7 @@ pytest.importorskip("vaderSentiment")
 if not spacy.util.is_package("en_core_web_sm"):
     pytest.skip("en_core_web_sm not installed", allow_module_level=True)
 
+from whitespace import gold  # noqa: E402
 from whitespace.extract.appid import AppIndex  # noqa: E402
 from whitespace.extract.nlp import RuleExtractor, build_nlp  # noqa: E402
 
@@ -223,3 +226,76 @@ def test_complaint_noise_is_dropped_or_penalised(extract):
     assert extract("There is no refund and no reason to play.") == []
     soup = extract("There is no soup.")
     assert soup and all(i.confidence < 0.6 for i in soup)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "I wish it had co-op but there are no checkpoints.",
+        "There are no checkpoints but I wish it had co-op.",
+    ],
+)
+def test_independent_wish_and_complaint_in_one_sentence(extract, text):
+    items = extract(text)
+    assert {(i.request_type, i.want_summary) for i in items} == {
+        ("feature_wish", "co-op"),
+        ("complaint", "checkpoints"),
+    }
+
+
+def test_independent_clauses_joined_by_and(extract):
+    items = extract("I wish the game had a map and it lacks checkpoints.")
+    assert {(i.request_type, i.want_summary) for i in items} == {
+        ("feature_wish", "map"),
+        ("complaint", "checkpoints"),
+    }
+
+
+def test_hypothetical_without_does_not_become_actual_complaint(extract):
+    items = extract("I want a farming sim with co-op but no energy timer.")
+    assert all(i.request_type == "genre_request" for i in items)
+    assert {i.want_summary for i in items} == {
+        "farming sim with co-op",
+        "farming sim without energy timer",
+    }
+
+
+@pytest.mark.parametrize("direction", ["more", "less"])
+def test_comparative_grind_preserves_direction(extract, direction):
+    items = extract(f"I wish it had {direction} grind.")
+    assert [(i.subject, i.want_summary) for i in items] == [("difficulty", f"{direction} grind")]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "There is no lack of checkpoints.",
+        "The game does not lack checkpoints.",
+        "Checkpoints are not missing.",
+        "There is no shortage of checkpoints.",
+        "The game has no bugs.",
+    ],
+)
+def test_no_false_complaints_about_absent_problems(extract, text):
+    assert extract(text) == []
+
+
+def test_negated_hypothetical_stays_a_wish(extract):
+    items = extract("I wish it had no checkpoints.")
+    assert [(i.request_type, i.want_summary) for i in items] == [
+        ("feature_wish", "without checkpoint")
+    ]
+
+
+def test_coordinated_hypothetical_is_not_an_actual_complaint(extract):
+    items = extract("I wish it had co-op and it had no timer.")
+    assert items and all(i.request_type != "complaint" for i in items)
+    assert any("without timer" in i.want_summary for i in items)
+
+
+def test_synthetic_english_gold_post_detection(extract):
+    rows = gold.read_csv(Path(__file__).parent / "fixtures" / "rules_gold_english.csv")
+    result = gold.score_rules_posts(rows, extract)
+    assert result["labeled"] == 20 and result["unlabeled"] == 0
+    assert result["true_positive"] == 12 and result["true_negative"] == 8
+    assert result["precision"] == 1.0 and result["recall"] == 1.0

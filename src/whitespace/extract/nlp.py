@@ -15,7 +15,7 @@ from whitespace.extract.appid import AppIndex
 from whitespace.extract.prefilter import find_trigger, has_lack_cue
 from whitespace.extract.schema import WantItem
 
-EXTRACTOR_VERSION = "rules-v2"
+EXTRACTOR_VERSION = "rules-v3"
 MODEL = "en_core_web_sm"
 PEOPLE = {
     "friend",
@@ -144,7 +144,10 @@ def _find_target(sent, after: int, skip: set[int], games: set[int], before: int 
             break
         if tok.i < after or tok.i in skip or tok.i in games:
             continue
-        if tok.dep_ in {"dobj", "attr", "pobj", "nsubjpass"} and tok.pos_ in {"NOUN", "PROPN"}:
+        is_grind = tok.lower_ in {"grind", "grinding"} and tok.pos_ == "ADJ"
+        if tok.dep_ in {"dobj", "attr", "pobj", "nsubjpass"} and (
+            tok.pos_ in {"NOUN", "PROPN"} or is_grind
+        ):
             if _is_people(tok) or rules.is_junk_target(tok.lemma_):
                 continue
             if tok.head.lower_ == "like":  # that's the reference game, not the target
@@ -168,7 +171,9 @@ def _with_less(sent, tok) -> str:
     """'less confusing mechanics' keeps its 'less': the want is the opposite of the phrase."""
     phrase = _phrase(tok)
     lo = max(sent.start, tok.i - 4)
-    if any(t.lower_ in rules.LESS_WORDS for t in sent.doc[lo : tok.i]):
+    if not phrase.startswith("less ") and any(
+        t.lower_ in rules.LESS_WORDS for t in sent.doc[lo : tok.i]
+    ):
         return f"less {phrase}"
     return phrase
 
@@ -218,6 +223,8 @@ def _lacks_verbs(sent) -> list[str]:
     for tok in sent:
         if tok.lower_ not in {"lack", "lacks", "lacked", "lacking", "missing"}:
             continue
+        if any(c.dep_ == "neg" or c.lower_ == "no" for c in tok.children):
+            continue  # "does not lack checkpoints" / "no lack of checkpoints"
         objs = [c for c in tok.children if c.dep_ == "dobj"]
         for c in tok.children:
             if c.dep_ == "prep" and c.lower_ in {"of", "in"}:
@@ -293,8 +300,38 @@ def _lacks_scarce(sent) -> list[str]:
     return out
 
 
+def _independent_clauses(sent):
+    """Split coordinated clauses with their own subjects, not list or wish modifiers."""
+    boundaries = []
+    for tok in sent:
+        if tok.dep_ != "cc" or tok.lower_ not in {"and", "but", "yet"}:
+            continue
+        end = next((t.i for t in sent.doc[tok.i + 1 : sent.end] if t.dep_ == "cc"), sent.end)
+        later = sent.doc[tok.i + 1 : end]
+        preceding_wish = any(t.lemma_.lower() == "wish" for t in sent.doc[sent.start : tok.i])
+        if any(
+            verb.dep_ == "conj"
+            and verb.pos_ in {"VERB", "AUX"}
+            and any(child.dep_ in {"nsubj", "nsubjpass", "expl"} for child in verb.children)
+            # Past-tense clauses after "wish" may be hypothetical, not actual complaints.
+            and not (preceding_wish and verb.tag_ == "VBD")
+            for verb in later
+            if verb.head.i < tok.i
+        ):
+            boundaries.append(tok.i)
+    start = sent.start
+    for boundary in boundaries:
+        if start < boundary:
+            yield sent.doc[start:boundary]
+        start = boundary + 1
+    if start < sent.end:
+        yield sent.doc[start : sent.end]
+
+
 class RuleExtractor:
     """text -> list[WantItem], deterministic."""
+
+    version = EXTRACTOR_VERSION
 
     def __init__(
         self, nlp, index: AppIndex | None = None, sentiment: Callable[[str], float] | None = None
@@ -307,10 +344,11 @@ class RuleExtractor:
         out: list[WantItem] = []
         seen: set[str] = set()
         for sent in doc.sents:
-            for item in self._sentence(sent) or self._complaints(sent):
-                if item.want_summary not in seen:
-                    seen.add(item.want_summary)
-                    out.append(item)
+            for clause in _independent_clauses(sent):
+                for item in self._sentence(clause) or self._complaints(clause):
+                    if item.want_summary not in seen:
+                        seen.add(item.want_summary)
+                        out.append(item)
         return out
 
     def _sentence(self, sent) -> list[WantItem]:
@@ -344,7 +382,7 @@ class RuleExtractor:
         bases = [
             _with_less(sent, t)
             for t in ([target, *target.conjuncts] if target is not None else [])
-            if t.pos_ in {"NOUN", "PROPN"}
+            if (t.pos_ in {"NOUN", "PROPN"} or t.lower_ in {"grind", "grinding"})
             and t.i not in covered
             and not _is_people(t)
             and not rules.is_junk_target(t.lemma_)

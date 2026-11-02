@@ -114,6 +114,19 @@ alternative. Clustering and scoring have building blocks but are not wired into 
 - [x] Gazetteer NER (EntityRuler): game names + aliases -> Steam appids
 - [x] Intensity: strong phrases / VADER magnitude -> 3, moderate verbs -> 2, neutral -> 1
 - [x] Strict schema validation, `referenced_games` + `referenced_appids` stored
+- [x] `rules-v3`: separate independent wishes and complaints, preserve more/less grind direction,
+      and reject some negated-absence false positives
+- [x] English post-level gold sampling and scoring (`gold-export` / `gold-score --kind rules`),
+      including the cue prefilter and posts irrespective of prior extraction
+- [x] Small labeled synthetic English regression set; it is not a real-world quality estimate
+- [ ] Label a representative real English post sample and measure post-level precision and recall;
+      separately label extracted items to assess item-level precision and partial misses
+- [ ] Improve more complex negation, ambiguous hypothetical clauses, and vague non-design feedback
+- [ ] Preserve exact original source quotes even when the rules extractor normalizes punctuation,
+      whitespace, or markup
+- [ ] Process long reviews beyond the current 4,000-character rules-extraction limit
+- [ ] Compare Azure and offline rules on the same posts without deleting existing wants; track
+      processing by extractor and version, including posts that produced no items
 
 ### Rules quality history
 
@@ -212,14 +225,34 @@ specific game in a specific genre. Each want now carries that context.
 ### Still to do
 - [x] **Genre stoplist:** Indie, Early Access, Free To Play, Gore, Nudity, and non-game software
       categories are filtered out when resolving genres; `context --refresh` re-applies it
-- [ ] Finer-grained **user tags** (e.g. "Farming Sim", "Roguelite") from a tag source; verify the
-      source's terms and rate limits first
 - [ ] Use categories (`catalog_game.tags`) as extra context, e.g. already-has-Co-op games
 - [ ] Forum board -> genre: `ForumCrawler` records only the forum name, not the board
 - [ ] Steam discussion/hub threads as a context-rich source
-- [ ] Dashboard filters by genre and game; quotes show which game they were about
+- [x] Local dashboard filters by genre and game; quotes show which game they were about
 - [ ] Niche key = cluster + dominant context genres (needs the `cluster` command)
 - [ ] Dissatisfaction rate and supply join restricted to games sharing the niche's genres
+
+### Steam user-defined tags
+
+Steam store pages display user-defined tags such as "Farming Sim" and "Roguelite". These can add
+more useful game-type context than broad genres, but are noisy user labels, not proven features or
+measures of demand. The current `catalog_game.tags` field contains Steam **store categories**, not
+these user-defined tags; keep them separate.
+
+- [ ] Review Steam's applicable terms, robots.txt, and permitted collection and display before use
+- [ ] Check for an appropriate official source; otherwise evaluate parsing the public store page
+      without bypassing age gates, login, or other restrictions
+- [ ] Add a separate user-tag field or table with a migration, source, fetch timestamp, and status;
+      preserve existing genres and categories
+- [ ] Fetch and cache tags per appid with conservative rate limits, retries, and a safe fallback when
+      a page is unavailable, restricted, malformed, or has no tags
+- [ ] Normalize and deduplicate tags; identify a configurable set of niche-relevant tags without
+      treating display order as an exact vote count
+- [ ] Attach or resolve appropriate tags for the context game versus referenced games; keep the
+      existing genre fallback when tags are unavailable
+- [ ] Add tag-based filtering to the local and public explorers once real tags are available
+- [ ] Test parsing with offline fixtures, migrations, cached refreshes, failures, and genre fallback;
+      manually review sample tags before using them in clustering
 
 ---
 
@@ -228,6 +261,8 @@ specific game in a specific genre. Each want now carries that context.
 - [x] `cluster_wants()` (embeddings + UMAP + HDBSCAN, `ml` extra) and cluster-drift matching
 - [x] `cluster/text.py`: context-prefixed text to embed
 - [ ] `cluster` CLI command: read `want_item`, cluster with context, write `cluster` / `cluster_member`
+- [ ] Experiment with selected user tags as additional context; compare cluster coherence against
+      genre-only inputs before making tags the default
 - [ ] Name clusters from **c-TF-IDF keywords** (BERTopic does this, no LLM)
 - [ ] Re-cluster on a schedule and track drift (splits/merges) using `drift.py`
 - [ ] Flag clusters dominated by one source or one thread (>60%)
@@ -258,6 +293,28 @@ specific game in a specific genre. Each want now carries that context.
 - [ ] Persist the SQLite file between scheduled CI runs, then enable the cron in `pipeline.yml`
 - [ ] Hosting: Streamlit Community Cloud or a static export (keep raw data private)
 
+### Local data explorer
+
+**Goal:** make it easy to sift through the real extracted feedback, rather than only the most recent
+100 rows. Keep pipeline controls in the local console; the public demo must stay read-only.
+
+- [x] Replace the fixed 100-row results view with searchable, paginated results and clear total vs.
+      filtered counts; filter across the full dataset before pagination
+- [x] Add combinable context-game, genre/game-type, subject, request-type, and confidence filters
+- [ ] Add filters for Steam user-defined tag (when available), store category, scope, language,
+      source, and extractor
+- [ ] Add confidence and intensity filters, plus sorting and an option to reset all filters;
+      explain that confidence is a heuristic, not a probability
+- [ ] Show each result's summary, subject, request type, game, genres, user tags, confidence,
+      extractor version, original quote, and source link where available; distinguish the game
+      discussed from games mentioned for comparison
+- [ ] Clearly handle missing games, genres, tags, quotes, or source links; do not fabricate values
+- [ ] Add useful summaries of the filtered data (counts by game, genre, tag, subject and request
+      type), with labels that distinguish extracted items from unique posts and real-world demand
+- [ ] Make the explorer usable on desktop and mobile, with clear empty, loading, and error states
+- [x] Test combined existing filters, pagination, missing metadata, and counts against fixture data
+- [ ] Test additional filters and sorting, including games with multiple user-defined tags
+
 ### Public Azure demo: read-only first
 
 **Goal:** a resume-ready public site where visitors explore reviewed player feedback without access
@@ -271,26 +328,27 @@ visitor-submitted analysis is outside the first release.
 
 - [ ] Choose the games to include; the current Steam configuration uses Stardew Valley and Hades
 - [ ] Label and review a representative sample of current extracted wants; remove obvious junk
-- [ ] Export a separate public dataset with only necessary fields: summaries, categories, game and
-      genre context, short quotes, and source links where appropriate
+- [ ] Export a separate public dataset with only necessary fields: summaries, subjects, request
+      types, game/genre context, reviewed user tags, short quotes, and source links where appropriate
 - [ ] Exclude raw reviews, author identifiers, LLM caches, credentials, and private operational data
 - [ ] Review Steam's terms and quote usage before publishing
 - [ ] Record the dataset date, scope, and limitations; distinguish curated demo counts from totals
 
 #### 2. Build the public dashboard
 
-- [ ] Create a public mode separate from the existing local pipeline console; do not expose pipeline
-      controls or credential fields
-- [ ] Add an overview and results explorer with filters for game, genre, request type, and confidence
-- [ ] Show each want with its quote and source context, linking to the source where appropriate
-- [ ] Add a concise explanation of the pipeline, dataset limitations, and a link to the repository
-- [ ] Clearly identify clustering and gap scoring as not yet available
-- [ ] Implement a genuinely read-only data path. The existing `Database` class initializes and
-      migrates SQLite, so the public demo needs a separate reader
+- [x] Separate read-only local demo app with no pipeline controls or credential fields
+- [x] Overview and filters for game, genre, request type, and confidence
+- [x] Show fictional examples with quotes and context, explain limitations, and link to the repository
+- [x] Clearly identify clustering and gap scoring as not yet available
+- [x] Read a packaged JSON dataset without opening the production database
+- [ ] Bring subject and reviewed user-tag filters and the improved browsing experience to the public
+      explorer; only expose fields explicitly approved for publication
+- [ ] Add reviewed real data and source links where appropriate, after checking terms
 
 #### 3. Deploy to Azure
 
-- [ ] Build a dedicated dashboard container containing only the reviewed demo dataset
+- [x] Build a dedicated dashboard container with only the public app and synthetic dataset
+- [ ] Replace synthetic examples with a reviewed public dataset before deploying
 - [ ] Deploy to Azure Container Apps with public HTTPS ingress
 - [ ] Keep API keys, pipeline controls, and writable production data out of the public container
 - [ ] Configure logs, health checks, and an Azure budget with alerts; estimate costs before deployment
@@ -310,6 +368,13 @@ visitor-submitted analysis is outside the first release.
 - [ ] Add screenshots, a live-demo link, and architecture notes to `README.md`
 - [ ] Describe it accurately as a player-feedback extraction and exploration tool; gap scoring is
       planned, not yet integrated
+
+### Suggested order
+
+1. Build the local explorer using existing games, genres, subjects, and request types.
+2. Review Steam's terms, then add user-tag collection and tag filters if permitted.
+3. Curate a public dataset and update the read-only demo; verify its privacy and source links.
+4. Deploy the demo to Azure; add clustering and scoring later, after validating their results.
 
 ---
 

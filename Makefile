@@ -23,7 +23,7 @@ help:
 > @echo Redo:      make redo [LIMIT=100] (re-extract all) / refresh (recompute context)
 > @echo            make extract-rules (offline spaCy, replaces existing wants)
 > @echo Look:      make sample [SAMPLE=30 LANGS=non-english TYPE=dislike] / stats
-> @echo Gold set:  make gold-export [KIND=items/missed/untriggered N=300] / gold-score [KIND=...]
+> @echo Gold set:  make gold-export [KIND=items/missed/untriggered/rules N=300] / gold-score [KIND=...]
 > @echo Web UI:    make ui / ui-logs / ui-stop
 
 # --- build / dev ---------------------------------------------------------------------------
