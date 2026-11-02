@@ -7,7 +7,7 @@ sources:
     min_interval_s: 1.5
     tos_url: https://store.steampowered.com/subscriber_agreement/
     tos_reviewed: null        # set to a date once you've read it
-    appids: [413150, 1145360] # example: Stardew Valley, Hades
+    appids: [413150, 1145360, 648800, 1623730] # example: Stardew Valley, Hades
 
   steam_catalog:               # not a content source: genres per game, used for context
     enabled: true

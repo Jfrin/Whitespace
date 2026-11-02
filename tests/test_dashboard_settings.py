@@ -34,6 +34,14 @@ def test_save_settings_preserves_other_values_and_roundtrips_secrets(files):
     assert "# games" in sources.read_text() and "reddit:" in sources.read_text()
 
 
+def test_azure_quota_settings_roundtrip(files):
+    env, sources = files
+    quotas = {"AZURE_OPENAI_RPM": "1212", "AZURE_OPENAI_TPM": "1212000"}
+    save_settings(env, sources, [3], quotas)
+    loaded = read_settings(env)
+    assert {key: loaded[key] for key in quotas} == quotas
+
+
 @pytest.mark.parametrize(
     "config", ["sources: {}\n", "sources:\n  steam_reviews:\n    appids:\n      - 1\n"]
 )
@@ -96,3 +104,55 @@ def test_local_console_persists_and_reloads_settings(monkeypatch, tmp_path, file
     assert app2.text_input[0].value == "123, 456"
     assert app2.text_input[1].value == "new@example.com"
     assert app2.selectbox[0].value == "rules"
+
+
+def test_local_console_edits_and_persists_azure_quotas(monkeypatch, tmp_path, files):
+    pytest.importorskip("streamlit")
+    from streamlit.testing.v1 import AppTest
+
+    env, sources = files
+    monkeypatch.setenv("WHITESPACE_UI_ENV_PATH", str(env))
+    monkeypatch.setenv("WHITESPACE_UI_SOURCES_PATH", str(sources))
+    monkeypatch.setenv("WHITESPACE_DATA_DIR", str(tmp_path))
+    app = AppTest.from_file(Path("src/whitespace/serve/app.py").resolve(), default_timeout=20).run()
+    assert not app.exception
+    next(x for x in app.number_input if x.label == "Requests per minute").set_value(99)
+    next(x for x in app.number_input if x.label == "Tokens per minute").set_value(98765)
+    app.run()
+    next(button for button in app.button if button.label == "Save settings").click().run()
+    assert not app.exception
+    loaded = read_settings(env)
+    assert loaded["AZURE_OPENAI_RPM"] == "99" and loaded["AZURE_OPENAI_TPM"] == "98765"
+    app2 = AppTest.from_file(
+        Path("src/whitespace/serve/app.py").resolve(), default_timeout=20
+    ).run()
+    assert next(x for x in app2.number_input if x.label == "Requests per minute").value == 99
+    assert next(x for x in app2.number_input if x.label == "Tokens per minute").value == 98765
+
+
+def test_local_console_passes_unsaved_quota_edits_to_job(monkeypatch, tmp_path, files):
+    pytest.importorskip("streamlit")
+    from streamlit.testing.v1 import AppTest
+
+    from whitespace.serve.jobs import JobRunner
+
+    env, sources = files
+    monkeypatch.setenv("WHITESPACE_UI_ENV_PATH", str(env))
+    monkeypatch.setenv("WHITESPACE_UI_SOURCES_PATH", str(sources))
+    monkeypatch.setenv("WHITESPACE_DATA_DIR", str(tmp_path))
+    captured = {}
+
+    def start(self, stages, appids, environment):
+        captured.update(environment)
+        return True
+
+    monkeypatch.setattr(JobRunner, "start", start)
+    app = AppTest.from_file(Path("src/whitespace/serve/app.py").resolve(), default_timeout=20).run()
+    next(x for x in app.text_input if x.label == "Azure endpoint").set_value("https://test.example")
+    next(x for x in app.text_input if x.label == "Azure API key").set_value("test")
+    next(x for x in app.number_input if x.label == "Requests per minute").set_value(77)
+    next(x for x in app.number_input if x.label == "Tokens per minute").set_value(76543)
+    app.run()
+    next(x for x in app.button if x.label == "Extract").click().run()
+    assert not app.exception
+    assert captured["AZURE_OPENAI_RPM"] == "77" and captured["AZURE_OPENAI_TPM"] == "76543"

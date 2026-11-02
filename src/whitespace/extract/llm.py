@@ -17,6 +17,25 @@ from whitespace.ingest.base import RateLimiter
 from whitespace.storage import Database
 
 MAX_CHARS = 3000
+CHUNK_OVERLAP = 200
+
+
+def post_chunks(text: str) -> list[str]:
+    """Overlapping source slices; no text is truncated for long-post extraction."""
+    if len(text) <= MAX_CHARS:
+        return [text] if text else []
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = min(start + MAX_CHARS, len(text))
+        chunk = text[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        if end == len(text):
+            break
+        start = end - CHUNK_OVERLAP
+    return chunks
+
 
 SYSTEM = """You extract unmet player demand from ONE video-game review or forum post.
 Return JSON: {"items": [...]}. Return {"items": []} if the post holds nothing a game designer
@@ -123,12 +142,14 @@ class LLMExtractor:
         max_retries: int = 2,
         batch_size: int = 8,
         batch_chars: int = 9000,
+        long_posts: bool = False,
     ) -> None:
         self.db, self.api_key, self.model = db, api_key, model
         self.client = client or httpx.Client(timeout=60.0)
         self.index, self.sleep, self.max_retries = index, sleep, max_retries
         self.limiter = RateLimiter(60.0 / rpm if rpm else 0.0, sleep=sleep)
         self.batch_size, self.batch_chars = batch_size, batch_chars
+        self.long_posts = long_posts
         self.stats = {
             "calls": 0, "cache_hits": 0, "retries": 0, "items": 0,
             "invalid": 0, "bad_quote": 0, "bad_json": 0, "missing": 0,
@@ -136,7 +157,18 @@ class LLMExtractor:
 
     # ------------------------------------------------------------------ public
     def __call__(self, text: str) -> list[WantItem]:
-        cleaned = rules.strip_markup(text)[:MAX_CHARS]
+        cleaned = rules.strip_markup(text)
+        if self.long_posts and len(cleaned) > MAX_CHARS:
+            found = []
+            for chunk in post_chunks(cleaned):
+                found.extend(self(chunk))
+            if not self.is_cached(cleaned):
+                return []  # retry the post until every chunk has a cached response
+            unique = {}
+            for item in found:
+                unique.setdefault(item.want_summary, item)
+            return list(unique.values())
+        cleaned = cleaned[:MAX_CHARS]
         if not cleaned:
             return []
         key = self._key(cleaned)
@@ -153,6 +185,14 @@ class LLMExtractor:
         else:
             self.stats["cache_hits"] += 1
         return self._items(json.loads(raw), cleaned)
+
+    def is_cached(self, text: str) -> bool:
+        """An empty result is complete only if its response was cached successfully."""
+        cleaned = rules.strip_markup(text)
+        chunks = post_chunks(cleaned) if self.long_posts else [cleaned[:MAX_CHARS]]
+        return all(
+            not chunk or self.db.llm_cache_get(self._key(chunk)) is not None for chunk in chunks
+        )
 
     # ----------------------------------------------------------------- internals
     def _key(self, cleaned: str) -> str:
@@ -193,10 +233,14 @@ class LLMExtractor:
     def extract_batch(self, texts: list[str]) -> list[list[WantItem]]:
         """Several posts per request. Results are cached
         per post, so single-post and batched runs share the cache."""
-        cleaned = [rules.strip_markup(t)[:MAX_CHARS] for t in texts]
+        cleaned = [rules.strip_markup(t) for t in texts]
         results: list[list[WantItem] | None] = [None] * len(texts)
         todo: list[int] = []
         for i, c in enumerate(cleaned):
+            if self.long_posts and len(c) > MAX_CHARS:
+                results[i] = self(c)
+                continue
+            c = cleaned[i] = c[:MAX_CHARS]
             if not c:
                 results[i] = []
                 continue
@@ -241,6 +285,7 @@ class LLMExtractor:
                 results[i] = self(cleaned[i])
             return
         self.stats["calls"] += 1
+        cached = []
         for k, i in enumerate(chunk):
             items = by_id.get(k)
             if not isinstance(items, list):
@@ -248,5 +293,7 @@ class LLMExtractor:
                 results[i] = []
                 continue
             one = {"items": items}
-            self.db.llm_cache_put(self._key(cleaned[i]), self.model, json.dumps(one))
+            cached.append((self._key(cleaned[i]), self.model, json.dumps(one)))
             results[i] = self._items(one, cleaned[i])
+        if cached:
+            self.db.llm_cache_put_many(cached)

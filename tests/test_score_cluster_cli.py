@@ -52,12 +52,33 @@ def test_cli_stats_and_disabled_source(monkeypatch, tmp_path, capsys):
     assert main(["ingest", "reddit"]) == 2  # disabled in the shipped registry
 
 
+def test_stage_metrics_record_throughput_and_failure(monkeypatch, tmp_path):
+    import json
+
+    from whitespace.storage import Database
+
+    monkeypatch.setenv("WHITESPACE_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
+    assert main(["clean"]) == 0
+    assert main(["extract"]) == 2  # no credentials
+    db = Database(tmp_path / "whitespace.sqlite")
+    rows = db.conn.execute("SELECT stage, status, metrics FROM stage_run ORDER BY id").fetchall()
+    assert [(r["stage"], r["status"]) for r in rows] == [
+        ("clean", "completed"),
+        ("extract", "failed"),
+    ]
+    assert json.loads(rows[0]["metrics"])["units_per_second"] == 0
+
+
 def test_cli_context_and_catalog_run_on_an_empty_db(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("WHITESPACE_DATA_DIR", str(tmp_path))
     assert main(["context", "--context-config", "config/context.yaml"]) == 0
     assert "unresolved" in capsys.readouterr().out
-    assert main(["catalog"]) == 0  # nothing referenced -> no network calls
-    assert "0 appids referenced" in capsys.readouterr().out
+    config = tmp_path / "sources.yaml"
+    config.write_text("sources:\n  steam_reviews:\n    appids: []\n", encoding="utf-8")
+    assert main(["--config", str(config), "catalog"]) == 0  # nothing to catalog
+    assert "0 appids to catalog" in capsys.readouterr().out
     assert main(["stats"]) == 0 and "catalog_game" in capsys.readouterr().out
 
 

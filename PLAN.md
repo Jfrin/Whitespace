@@ -11,7 +11,49 @@ quality measurements.
 CLI and local dashboard. Azure Foundry is the default extractor; English-only rules are the offline
 alternative. Clustering and scoring have building blocks but are not wired into the pipeline.
 
-### Latest reported run
+### Make the data decision-useful
+
+Prioritize trustworthy evidence over more sources or a polished score:
+
+1. [ ] **Measure extraction quality.** Label representative real reviews and extracted wants,
+       including reviews with no extracted result; report precision and recall, sample sizes, and
+       breakdowns by language and request type before scaling.
+2. [ ] **Show coverage and bias.** Report reviews collected, filtered, and processed by game,
+       source, time window, and extractor version. Steam currently defaults to negative reviews;
+       do not present this sample as all players or infer population demand from it.
+3. [ ] **Build an evidence-backed niche explorer.** Group similar requests while distinguishing
+       game-specific changes from requests for a different kind of game. Show distinct review
+       counts, representative and contradictory quotes, and the underlying game context.
+4. [ ] **Validate supply matches.** Show comparable games and why they match the requested
+       features; genre or user-tag overlap alone does not prove a feature is present. Validate
+       matches before producing ranked gap scores.
+5. [ ] **Make claims inspectable.** Each opportunity card should show its time window, processed
+       review denominator, games, source quotes and links, coverage, and limitations. Investigate
+       stable individual-review links where permitted; current Steam links point to the game's
+       review listing. Clearly label missing or stale evidence.
+
+Helpful/funny votes and user-defined tags are context, not market size or independent demand;
+do not automatically use them to boost scores without bias and quality evaluation.
+
+### Provisional AI-assisted quality check
+
+- A seeded local sample of 100 reviews and 100 extracted items was drawn independently from the
+  currently eligible `azure-v3:gpt-4.1-mini` cohort with completed, non-content-filtered cached
+  responses. Review labels were assigned without displaying the model's predictions. Files and
+  sampling details are in `data/evaluation_2026-11-02/`; they contain review text and are private.
+- The AI reviewer marked 52 items usable, 42 incorrect/out of scope, and 6 uncertain. Among the
+  94 decisive labels, 52/94 (55.3%) were usable. This applies the stated usefulness rubric and is
+  not independent human-validated precision.
+- For post-level detection, decisive AI labels gave 64 true positives, 20 false positives, 11 true
+  negatives, and 0 false negatives; 5 were uncertain. The resulting 64/64 recall checks whether
+  *any* item was emitted, not whether its content was correct or complete; it is not evidence of
+  perfect extraction. The cohort excludes unprocessed, low-effort, duplicate and content-filtered
+  reviews, and the review text was limited to the first 3,000 normalized characters.
+- [ ] Independently review the sample with human labels and document disagreements. Investigate
+      technical bugs leaking into output, unsupported summaries, and vague sentiment being framed
+      as actionable requests; evaluate excluded and unprocessed reviews separately.
+
+### Earlier reported run
 
 - Docker formatting and lint passed; tests reported **275 passed, 1 skipped**, with **93.12%**
   coverage. The pipeline image built successfully.
@@ -58,8 +100,8 @@ alternative. Clustering and scoring have building blocks but are not wired into 
 - [x] `SourceCrawler` base: rate limiter, incremental cursors, untouched raw storage, run ledger
 - [x] Re-running never duplicates raw files or posts
 - [x] Failed runs are ledgered and do not advance the cursor
-- [ ] Expose `max_pages` in config + one-time **backfill mode** (today: 20 pages x 100 per game,
-      then only newer reviews on later runs)
+- [x] Support `max_pages` in config or CLI and resumable backfills for Steam and Reddit;
+      source retention and cursor behavior still limit available history
 - [ ] Canary tests per crawler that hit the real site (marked `network`, run manually)
 
 ### Sources
@@ -81,6 +123,22 @@ alternative. Clustering and scoring have building blocks but are not wired into 
 - [x] Reddit: **subreddit -> genre map** in `config/context.yaml`
 - [ ] Forums: **board -> genre/game map** (today only the forum name is recorded)
 
+### Steam review engagement
+
+Steam's helpful votes are different from a review's positive/negative recommendation. The official
+reviews API exposes helpful and funny votes and a separate weighted helpfulness score.
+
+- [x] Capture available helpful/funny votes, recommendation, weighted helpfulness, comments and
+      playtime; preserve missing values separately from zero
+- [x] Recover metrics from stored raw responses and refresh existing reviews using independent,
+      rate-limited, resumable cursors; store the latest observation time without changing ingest cursors
+- [x] Show available review metrics and support helpful/funny sorting in the local explorer
+- [ ] Retain historical metric snapshots if trend analysis needs them; currently only the latest
+      observation is stored, and Steam's anonymous API responses can be cached
+- [ ] Evaluate capped or normalized helpfulness weighting for representative quotes and niche
+      scoring; test for age, popularity, manipulation, and review-bomb bias before enabling it
+- [ ] Review source terms and validate metrics on representative real reviews before scoring
+
 ---
 
 ## 3. Cleaning
@@ -99,6 +157,8 @@ alternative. Clustering and scoring have building blocks but are not wired into 
 
 - [x] Azure Foundry is the default; offline rules are available through the CLI
 - [x] Multilingual extraction, batched requests, per-post cache, retries and resumable runs
+- [x] Balance limited extraction across ingested games and track completed posts with no items;
+      previously ingested posts remain available for later runs without repeating empty results
 - [x] Schema validation and verbatim source-quote checks; record extractor version per item
 - [x] Azure content-filter handling: retry blocked batches individually and cache blocked posts
 - [x] Separate `dislike` items from actionable wants and complaints
@@ -240,19 +300,19 @@ measures of demand. The current `catalog_game.tags` field contains Steam **store
 these user-defined tags; keep them separate.
 
 - [ ] Review Steam's applicable terms, robots.txt, and permitted collection and display before use
-- [ ] Check for an appropriate official source; otherwise evaluate parsing the public store page
-      without bypassing age gates, login, or other restrictions
-- [ ] Add a separate user-tag field or table with a migration, source, fetch timestamp, and status;
+- [x] Fetch public store-page tags explicitly, without bypassing age gates, login, or restrictions
+- [x] Add a separate user-tag table with source, fetch timestamp, and status;
       preserve existing genres and categories
-- [ ] Fetch and cache tags per appid with conservative rate limits, retries, and a safe fallback when
-      a page is unavailable, restricted, malformed, or has no tags
-- [ ] Normalize and deduplicate tags; identify a configurable set of niche-relevant tags without
-      treating display order as an exact vote count
+- [x] Fetch and cache tags per appid with conservative rate limits and preserve prior data when a
+      page is unavailable, restricted, or malformed; retry failures on a later run
+- [x] Normalize and deduplicate tags without treating display order as an exact vote count
+- [ ] Identify a configurable set of niche-relevant tags
 - [ ] Attach or resolve appropriate tags for the context game versus referenced games; keep the
       existing genre fallback when tags are unavailable
-- [ ] Add tag-based filtering to the local and public explorers once real tags are available
-- [ ] Test parsing with offline fixtures, migrations, cached refreshes, failures, and genre fallback;
-      manually review sample tags before using them in clustering
+- [x] Add tag-based filtering to the local explorer
+- [ ] Add tag-based filtering to the public explorer after a real dataset and publication review
+- [x] Test parsing, caching, restrictions and failures offline
+- [ ] Manually review sample tags and test context fallbacks before using tags in clustering
 
 ---
 
@@ -287,6 +347,8 @@ these user-defined tags; keep them separate.
 
 - [x] Local Streamlit console: configure and run the pipeline or individual stages, monitor progress,
       and inspect recent wants and quotes
+- [x] Local coverage table shows ingested posts vs. extracted items for every game, including
+      configured IDs with no posts and games with no extracted wants
 - [x] Read and display `niche_score` when available (empty state until scoring is wired up)
 - [ ] Niche explorer: trend lines, representative quotes (with game), closest existing games
 - [ ] Weekly report (Markdown/email)

@@ -1,5 +1,8 @@
 import io
 import os
+import subprocess
+import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -71,6 +74,97 @@ def test_only_one_job_can_run(monkeypatch):
     assert runner.start([["clean"]], [123], {})
     assert not runner.start([["clean"]], [123], {})
     assert len(threads) == 1 and runner.snapshot()[0] == "running"
+
+
+def test_stop_terminates_current_stage_and_skips_remaining(monkeypatch):
+    runner = JobRunner()
+    runner._status = "running"
+    launched = []
+
+    class Output:
+        def __iter__(self):
+            yield "working\n"
+            assert runner.stop()
+
+    class Process:
+        def __init__(self, args, **kwargs):
+            launched.append(self)
+            self.stdout = Output()
+            self.terminated = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def poll(self):
+            return -15 if self.terminated else None
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self):
+            return -15
+
+    monkeypatch.setattr("whitespace.serve.jobs.subprocess.Popen", Process)
+    runner._run([["clean"], ["extract"]], [123], {})
+    assert len(launched) == 1 and launched[0].terminated
+    assert runner.snapshot()[0] == "stopped"
+    assert not runner.stop()
+
+
+def test_stop_between_stages_does_not_start_another(monkeypatch):
+    runner = JobRunner()
+    runner._status = "running"
+    launched = []
+
+    class Process:
+        def __init__(self, args, **kwargs):
+            launched.append(args)
+            self.stdout = io.StringIO("done\n")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def poll(self):
+            return 0
+
+        def wait(self):
+            assert runner.stop()
+            return 0
+
+    monkeypatch.setattr("whitespace.serve.jobs.subprocess.Popen", Process)
+    runner._run([["clean"], ["extract"]], [123], {})
+    assert len(launched) == 1 and runner.snapshot()[0] == "stopped"
+
+
+def test_stop_terminates_a_real_running_process(monkeypatch):
+    runner = JobRunner()
+    launched, finished = threading.Event(), threading.Event()
+    popen, run = subprocess.Popen, runner._run
+
+    def start_process(args, **kwargs):
+        process = popen([sys.executable, "-u", "-c", "import time; time.sleep(60)"], **kwargs)
+        launched.set()
+        return process
+
+    def run_and_signal(*args):
+        try:
+            run(*args)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr("whitespace.serve.jobs.subprocess.Popen", start_process)
+    monkeypatch.setattr(runner, "_run", run_and_signal)
+    assert runner.start([["clean"], ["extract"]], [123], os.environ.copy())
+    assert launched.wait(10)
+    assert runner.stop()
+    assert finished.wait(10)
+    assert runner.snapshot()[0] == "stopped"
 
 
 def test_real_clean_stage_runs_in_subprocess(tmp_path):

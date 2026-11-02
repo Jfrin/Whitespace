@@ -16,6 +16,7 @@ KEYS = {
     "AZURE_OPENAI_API_KEY",
     "AZURE_OPENAI_DEPLOYMENT",
     "AZURE_OPENAI_RPM",
+    "AZURE_OPENAI_TPM",
     "AZURE_OPENAI_BATCH_SIZE",
 }
 ASSIGNMENT = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=")

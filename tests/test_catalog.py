@@ -1,6 +1,7 @@
 import httpx
 
 from whitespace.catalog import parse_appdetails, referenced_appids, refresh_catalog
+from whitespace.models import Post
 from whitespace.storage import RawStore
 
 STARDEW = {
@@ -99,3 +100,45 @@ def test_referenced_appids_unions_context_and_comparison_games(db, add_want):
     add_want("2", game_appid=None, referenced=[1145360, 105600])
     add_want("3", game_appid=892970)
     assert referenced_appids(db) == [105600, 413150, 892970, 1145360]
+
+
+def test_catalog_includes_configured_and_ingested_games_without_wants(db, limiter):
+    db.upsert_post(Post("steam_reviews", "1", "url", "review", 1, game_appid=570))
+    ids = referenced_appids(db, [570, 413150, 413150])
+    assert ids == [570, 413150]
+    calls = []
+
+    def handler(req):
+        appid = req.url.params["appids"]
+        calls.append(appid)
+        return httpx.Response(
+            200, json={appid: {"success": True, "data": {"name": f"Game {appid}"}}}
+        )
+
+    with _client(handler) as client:
+        assert refresh_catalog(db, client, limiter, ids)["fetched"] == 2
+    assert calls == ["570", "413150"]
+    assert (
+        db.conn.execute("SELECT name FROM catalog_game WHERE appid=570").fetchone()[0] == "Game 570"
+    )
+
+
+def test_catalog_cli_uses_configured_ids_even_without_posts(monkeypatch, tmp_path, limiter):
+    from whitespace.cli import main
+
+    monkeypatch.setenv("WHITESPACE_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("whitespace.cli.RateLimiter", lambda *args, **kwargs: limiter)
+    calls = []
+
+    def handler(req):
+        appid = req.url.params["appids"]
+        calls.append(appid)
+        return httpx.Response(
+            200, json={appid: {"success": True, "data": {"name": f"Game {appid}"}}}
+        )
+
+    monkeypatch.setattr("whitespace.cli._client", lambda settings: _client(handler))
+    config = tmp_path / "sources.yaml"
+    config.write_text("sources:\n  steam_reviews:\n    appids: [570, 413150]\n", encoding="utf-8")
+    assert main(["--config", str(config), "catalog"]) == 0
+    assert calls == ["570", "413150"]

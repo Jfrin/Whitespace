@@ -4,7 +4,15 @@ from pathlib import Path
 import pytest
 
 from whitespace.models import CatalogGame, Post
-from whitespace.serve.explorer import Filters, count, options, page, safe_source_url, string_list
+from whitespace.serve.explorer import (
+    Filters,
+    count,
+    game_coverage,
+    options,
+    page,
+    safe_source_url,
+    string_list,
+)
 from whitespace.storage import Database
 
 
@@ -68,6 +76,18 @@ def test_missing_metadata_and_invalid_pages(db):
         page(db.conn, Filters(), 0, 25)
     with pytest.raises(ValueError):
         page(db.conn, Filters(), 1, 101)
+
+
+def test_coverage_shows_posts_without_wants_and_configured_games_without_posts(db):
+    db.upsert_post(Post("steam_reviews", "1", "", "first", 1, game_appid=413150))
+    db.upsert_post(Post("steam_reviews", "2", "", "second", 2, game_appid=1145360))
+    db.conn.execute("INSERT INTO want_item(post_id, want_summary) VALUES (1, 'want')")
+    db.conn.commit()
+    coverage = {r["appid"]: r for r in game_coverage(db.conn, [413150, 570])}
+    assert (coverage[413150]["posts"], coverage[413150]["wants"]) == (1, 1)
+    assert (coverage[1145360]["posts"], coverage[1145360]["wants"]) == (1, 0)
+    assert (coverage[570]["posts"], coverage[570]["wants"]) == (0, 0)
+    assert 1145360 in options(db.conn)["games"]
 
 
 @pytest.mark.parametrize(

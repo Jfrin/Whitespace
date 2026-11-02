@@ -10,7 +10,18 @@ import pandas as pd
 import streamlit as st
 
 from whitespace.config import Settings, load_sources
-from whitespace.serve.explorer import Filters, count, options, page, safe_source_url, string_list
+from whitespace.extract.quota import DEFAULT_RPM, DEFAULT_TPM
+from whitespace.serve.explorer import (
+    Filters,
+    count,
+    engagement_text,
+    game_coverage,
+    options,
+    page,
+    review_engagement,
+    safe_source_url,
+    string_list,
+)
 from whitespace.serve.jobs import JobRunner, commands, parse_appids
 from whitespace.serve.settings import read_settings, save_settings
 from whitespace.storage import Database
@@ -81,7 +92,15 @@ with st.sidebar:
             "Deployment name", value=default("AZURE_OPENAI_DEPLOYMENT", "gpt-4.1-mini")
         )
         rpm = st.number_input(
-            "Requests per minute", min_value=1, value=number_default("AZURE_OPENAI_RPM", 10)
+            "Requests per minute",
+            min_value=1,
+            value=number_default("AZURE_OPENAI_RPM", DEFAULT_RPM),
+        )
+        tpm = st.number_input(
+            "Tokens per minute",
+            min_value=1,
+            value=number_default("AZURE_OPENAI_TPM", DEFAULT_TPM),
+            help="Per-process estimated token budget; Azure may apply different limits.",
         )
         batch = st.number_input(
             "Posts per request",
@@ -110,6 +129,7 @@ with st.sidebar:
                         "AZURE_OPENAI_API_KEY": api_key.strip(),
                         "AZURE_OPENAI_DEPLOYMENT": deployment.strip(),
                         "AZURE_OPENAI_RPM": str(rpm),
+                        "AZURE_OPENAI_TPM": str(tpm),
                         "AZURE_OPENAI_BATCH_SIZE": str(batch),
                     }
                 )
@@ -142,6 +162,7 @@ def start_job(stage: str) -> None:
                     "AZURE_OPENAI_API_KEY": api_key.strip(),
                     "AZURE_OPENAI_DEPLOYMENT": deployment.strip(),
                     "AZURE_OPENAI_RPM": str(rpm),
+                    "AZURE_OPENAI_TPM": str(tpm),
                     "AZURE_OPENAI_BATCH_SIZE": str(batch),
                 }
             )
@@ -155,24 +176,31 @@ def start_job(stage: str) -> None:
 @st.fragment(run_every=2)
 def controls() -> None:
     status, output = job.snapshot()
-    busy = status == "running"
+    busy = status in {"running", "stopping"}
     st.subheader("Run pipeline")
     st.caption("Full pipeline: ingest Steam reviews → clean → extract → catalog → add context.")
     if st.button("▶ Run full pipeline", type="primary", disabled=busy):
         start_job("pipeline")
-    cols = st.columns(5)
+    if st.button("■ Stop run", disabled=status != "running"):
+        if job.stop():
+            st.rerun()
+    cols = st.columns(7)
     for col, stage, label in zip(
         cols,
-        ["ingest", "clean", "extract", "catalog", "context"],
-        ["Ingest", "Clean", "Extract", "Catalog", "Context"],
+        ["ingest", "clean", "extract", "catalog", "context", "steam-tags", "review-metrics"],
+        ["Ingest", "Clean", "Extract", "Catalog", "Context", "Steam tags", "Review metrics"],
         strict=True,
     ):
         if col.button(label, disabled=busy, use_container_width=True):
             start_job(stage)
     if status == "running":
-        st.info("Running… progress updates automatically. You can leave this page open.")
+        st.info("Running… Stop ends the current stage and skips the rest.")
+    elif status == "stopping":
+        st.info("Stopping the current stage…")
     elif status == "completed":
         st.success("Finished. Refresh results below to see the latest data.")
+    elif status == "stopped":
+        st.warning("Stopped. Completed work is saved; you can resume by running the stage again.")
     elif status == "failed":
         st.error("The run stopped. Check the output below.")
     if output:
@@ -195,6 +223,29 @@ try:
             strict=True,
         ):
             col.metric(label, db.count(table))
+        try:
+            configured_ids = parse_appids(appids_input)
+        except ValueError:
+            configured_ids = default_appids
+        coverage = game_coverage(db.conn, configured_ids)
+        st.subheader("Games and extraction coverage")
+        st.caption(
+            "Ingested posts are not the same as extracted wants. The extraction limit is per run "
+            "across all games. Run Catalog to fetch missing game names and genres."
+        )
+        st.dataframe(
+            [
+                {
+                    "Game": row["name"] or f"Steam app {row['appid']}",
+                    "App ID": row["appid"],
+                    "Posts": row["posts"],
+                    "Extracted items": row["wants"],
+                }
+                for row in coverage
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
         choices = options(db.conn)
         total = count(db.conn, Filters())
         if not total:
@@ -207,11 +258,16 @@ try:
                 "Game", list(choices["games"]), format_func=choices["games"].get
             )
             genres = right.multiselect("Genre / game type", choices["genres"])
+            user_tags = right.multiselect("Steam user-defined tags", choices["user_tags"])
             subjects = left.multiselect("Subject", choices["subjects"])
             types = right.multiselect("Request type", choices["request_types"])
+            order = st.selectbox("Sort results", ["Newest", "Most helpful", "Most funny"])
             confidence = st.slider("Minimum confidence", 0.0, 1.0, 0.0, 0.1)
-            st.caption("Steam user-defined tags are not available yet.")
-            filters = Filters(games, genres, subjects, types, search, confidence)
+            st.caption("User-defined tags describe the reviewed game, not individual requests.")
+            sort_by = {"Newest": "newest", "Most helpful": "helpful", "Most funny": "funny"}[order]
+            filters = Filters(
+                games, genres, subjects, types, search, confidence, user_tags, sort_by
+            )
             matches = count(db.conn, filters)
             st.caption(f"{matches:,} matching extracted items out of {total:,} total")
             if not matches:
@@ -241,6 +297,9 @@ try:
                             ", ".join(string_list(item["context_genres"])) or "Unknown genre"
                         )
                         st.caption(f"{game} · {genre_text}")
+                        tags = string_list(item["user_tags"])
+                        if tags:
+                            st.caption("Steam user-defined tags: " + ", ".join(tags))
                         conf = (
                             f"{item['confidence']:.2f}"
                             if item["confidence"] is not None
@@ -252,6 +311,14 @@ try:
                             f"{item['extractor_version'] or 'Unknown extractor'}"
                         )
                         st.text(item["quote"] or "Quote unavailable")
+                        engagement = review_engagement(item["source"], item["post_meta"])
+                        for label in engagement_text(engagement):
+                            st.caption(label)
+                        observed = engagement.get("observed_at") or item["raw_fetched_at"]
+                        if engagement and observed:
+                            st.caption(
+                                f"Latest metric update: {observed}; some values may be older."
+                            )
                         references = string_list(item["referenced_games"])
                         if references:
                             st.caption("Compared with: " + ", ".join(references))

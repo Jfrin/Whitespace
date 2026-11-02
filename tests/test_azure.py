@@ -5,6 +5,7 @@ import pytest
 
 from whitespace.extract.azure import AzureExtractor
 from whitespace.extract.errors import ExtractorStop
+from whitespace.extract.quota import DEFAULT_RPM, DEFAULT_TPM, estimated_tokens
 from whitespace.extract.run import extract_all
 from whitespace.models import Post
 
@@ -56,6 +57,83 @@ def test_request_and_cache(db):
     assert ex.version == "azure-v3:gpt-4.1-mini"
 
 
+def test_usage_is_recorded_when_provider_reports_it(db):
+    payload = response({"items": [ITEM]}).json()
+    payload["usage"] = {"prompt_tokens": 100, "completion_tokens": 20}
+    ex = make(db, lambda req: httpx.Response(200, json=payload))
+    ex(TEXT)
+    ex(TEXT)  # cache hit does not invent another usage record
+    assert ex.stats["prompt_tokens"] == 100 and ex.stats["completion_tokens"] == 20
+    assert ex.stats["usage_reported"] == 1 and ex.stats["usage_missing"] == 0
+
+
+def test_missing_usage_is_distinct_from_zero_usage(db):
+    ex = make(db, lambda req: response({"items": []}))
+    ex(TEXT)
+    assert ex.stats["usage_missing"] == 1 and ex.stats["usage_reported"] == 0
+
+
+def test_long_posts_extract_late_feedback_and_cache_every_chunk(db):
+    late = "I wish the game had a minimap."
+    text = ("ordinary review words " * 180) + late
+    calls = []
+
+    def handler(req):
+        body = json.loads(req.content)
+        content = body["messages"][1]["content"]
+        calls.append(content)
+        return response({"items": [ITEM] if late in content else []})
+
+    ex = make(db, handler, long_posts=True)
+    assert ex.version.endswith(":long-v1")
+    assert [item.want_summary for item in ex(text)] == ["minimap"]
+    assert len(calls) > 1 and ex.is_cached(text)
+    assert ex(text)[0].want_summary == "minimap" and len(calls) > 1
+
+
+def test_long_post_retries_missing_chunk_without_saving_partial_wants(db):
+    late = "I wish the game had a minimap."
+    text = ("ordinary review words " * 180) + late
+    attempts = []
+
+    def handler(req):
+        content = json.loads(req.content)["messages"][1]["content"]
+        attempts.append(content)
+        if late in content and sum(late in item for item in attempts) == 1:
+            return httpx.Response(
+                200, json={"choices": [{"finish_reason": "stop", "message": {"content": "bad"}}]}
+            )
+        return response({"items": [ITEM] if late in content else []})
+
+    ex = make(db, handler, long_posts=True)
+    assert ex(text) == [] and not ex.is_cached(text)
+    before = len(attempts)
+    assert ex(text)[0].want_summary == "minimap" and ex.is_cached(text)
+    assert len(attempts) == before + 1
+
+
+def test_incomplete_long_post_remains_eligible_for_extraction(db):
+    text = TEXT + " " + ("ordinary review words " * 180) + " final marker"
+    db.upsert_post(Post("s", "1", "u", text, 1))
+    db.set_flags(1, "en", {"is_dup": False, "is_low_effort": False})
+    calls = []
+
+    def handler(req):
+        content = json.loads(req.content)["messages"][1]["content"]
+        calls.append(content)
+        if "final marker" in content and sum("final marker" in part for part in calls) == 1:
+            return httpx.Response(
+                200, json={"choices": [{"finish_reason": "stop", "message": {"content": "bad"}}]}
+            )
+        return response({"items": [ITEM] if TEXT in content else []})
+
+    ex = make(db, handler, long_posts=True, batch_size=1)
+    assert extract_all(db, ex, prefilter="all")["items"] == 0
+    assert db.count("want_item") == db.count("extraction_attempt") == 0
+    assert extract_all(db, ex, prefilter="all")["items"] == 1
+    assert db.count("want_item") == db.count("extraction_attempt") == 1
+
+
 def test_batch_validation_and_cache(db):
     calls = []
 
@@ -70,6 +148,24 @@ def test_batch_validation_and_cache(db):
     assert len(ex(TEXT)) == 1 and len(calls) == 1
 
 
+def test_invalid_json_is_retried_on_the_next_extract_run(db):
+    db.upsert_post(Post("s", "1", "u", TEXT, 1))
+    db.set_flags(1, "en", {"is_dup": False, "is_low_effort": False})
+    answers = iter(["oops", json.dumps({"items": []})])
+
+    def handler(req):
+        return httpx.Response(
+            200,
+            json={"choices": [{"finish_reason": "stop", "message": {"content": next(answers)}}]},
+        )
+
+    ex = make(db, handler, batch_size=1)
+    assert extract_all(db, ex, prefilter="all")["candidates"] == 1
+    assert db.count("extraction_attempt") == 0
+    assert extract_all(db, ex, prefilter="all")["candidates"] == 1
+    assert db.count("extraction_attempt") == 1
+
+
 def test_rate_limit_retries_using_azure_header(db):
     answers = iter(
         [httpx.Response(429, headers={"retry-after-ms": "1500"}), response({"items": [ITEM]})]
@@ -77,6 +173,75 @@ def test_rate_limit_retries_using_azure_header(db):
     sleeps = []
     ex = make(db, lambda req: next(answers), sleep=sleeps.append)
     assert len(ex(TEXT)) == 1 and sleeps == [1.5]
+
+
+def test_retries_reserve_token_budget_for_every_request(db):
+    answers = iter([httpx.Response(429), response({"items": [ITEM]})])
+    ex = make(db, lambda req: next(answers), sleep=lambda _: None)
+    reservations = []
+    ex.token_limiter.wait = reservations.append
+    assert ex(TEXT)[0].want_summary == "minimap"
+    assert reservations == [estimated_tokens(ex._body(TEXT))] * 2
+
+
+def test_cli_passes_quota_settings_to_extractor(monkeypatch, tmp_path, capsys):
+    from whitespace.cli import main
+
+    monkeypatch.setenv("WHITESPACE_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "key")
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.invalid")
+    monkeypatch.delenv("AZURE_OPENAI_RPM", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_TPM", raising=False)
+    calls = []
+
+    class FakeExtractor:
+        def __init__(self, *args, **kwargs):
+            calls.append(kwargs)
+            self.stats = {}
+
+    monkeypatch.setattr("whitespace.extract.azure.AzureExtractor", FakeExtractor)
+    monkeypatch.setattr("whitespace.extract.run.extract_all", lambda *a, **kw: {})
+    assert main(["extract"]) == 0
+    assert calls[-1]["rpm"] == DEFAULT_RPM and calls[-1]["tpm"] == DEFAULT_TPM
+    monkeypatch.setenv("AZURE_OPENAI_RPM", "33")
+    monkeypatch.setenv("AZURE_OPENAI_TPM", "20000")
+    assert main(["extract"]) == 0
+    assert calls[-1]["rpm"] == 33 and calls[-1]["tpm"] == 20000
+    assert main(["extract", "--rpm", "44", "--tpm", "30000"]) == 0
+    assert calls[-1]["rpm"] == 44 and calls[-1]["tpm"] == 30000
+    assert main(["extract", "--tpm", "-1"]) == 2
+    assert "non-negative" in capsys.readouterr().err
+
+
+def test_cli_cost_uses_only_explicit_prices_and_reported_tokens(monkeypatch, tmp_path):
+    from whitespace.cli import main
+    from whitespace.storage import Database
+
+    monkeypatch.setenv("WHITESPACE_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "key")
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.invalid")
+    monkeypatch.delenv("AZURE_OPENAI_INPUT_PRICE_PER_MILLION", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_OUTPUT_PRICE_PER_MILLION", raising=False)
+
+    class FakeExtractor:
+        def __init__(self, *args, **kwargs):
+            self.stats = {
+                "usage_reported": 1,
+                "usage_missing": 1,
+                "prompt_tokens": 1000,
+                "completion_tokens": 500,
+            }
+
+    monkeypatch.setattr("whitespace.extract.azure.AzureExtractor", FakeExtractor)
+    monkeypatch.setattr("whitespace.extract.run.extract_all", lambda *a, **kw: {"candidates": 1})
+    assert main(["extract"]) == 0
+    assert main(["extract", "--input-price", "2", "--output-price", "4"]) == 0
+    db = Database(tmp_path / "whitespace.sqlite")
+    rows = db.conn.execute("SELECT metrics FROM stage_run ORDER BY id").fetchall()
+    first, second = (json.loads(row[0])["provider"] for row in rows)
+    assert "known_estimated_cost_usd" not in first
+    assert second["known_estimated_cost_usd"] == pytest.approx(0.004)
+    assert second["usage_missing"] == 1  # price covers reported calls only
 
 
 @pytest.mark.parametrize(

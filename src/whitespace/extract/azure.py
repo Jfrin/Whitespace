@@ -11,6 +11,7 @@ import httpx
 from whitespace.extract import rules
 from whitespace.extract.errors import ExtractorStop
 from whitespace.extract.llm import MAX_CHARS, SCHEMA, SYSTEM, LLMExtractor
+from whitespace.extract.quota import DEFAULT_RPM, DEFAULT_TPM, TokenRateLimiter, estimated_tokens
 
 DEFAULT_MODEL = "gpt-4.1-mini"
 PROMPT_VERSION = "azure-v3"
@@ -60,13 +61,24 @@ def _strict_schema(schema: dict) -> dict:
 class AzureExtractor(LLMExtractor):
     """Reuse validation, batching and caching with a Foundry deployment."""
 
-    def __init__(self, db, api_key: str, endpoint: str, model: str = DEFAULT_MODEL, **kwargs):
+    def __init__(
+        self,
+        db,
+        api_key: str,
+        endpoint: str,
+        model: str = DEFAULT_MODEL,
+        tpm: int = DEFAULT_TPM,
+        **kwargs,
+    ):
+        kwargs.setdefault("rpm", DEFAULT_RPM)
         super().__init__(db, api_key, model=model, **kwargs)
+        self.token_limiter = TokenRateLimiter(tpm, self.limiter, sleep=self.sleep)
         self.endpoint = endpoint.rstrip("/")
         if not self.endpoint.endswith("/openai/v1"):
             self.endpoint += "/openai/v1"
-        self.version = f"{PROMPT_VERSION}:{model}"
+        self.version = f"{PROMPT_VERSION}:{model}" + (":long-v1" if self.long_posts else "")
         self.stats.update(filtered_posts=0, filtered_batches=0)
+        self.stats.update(prompt_tokens=0, completion_tokens=0, usage_reported=0, usage_missing=0)
 
     def __call__(self, text: str):
         try:
@@ -118,7 +130,7 @@ class AzureExtractor(LLMExtractor):
     def _generate(self, body: dict) -> str:
         last = ""
         for attempt in range(self.max_retries + 1):
-            self.limiter.wait()
+            self.token_limiter.wait(estimated_tokens(body))
             try:
                 resp = self.client.post(
                     f"{self.endpoint}/chat/completions",
@@ -133,7 +145,24 @@ class AzureExtractor(LLMExtractor):
                 continue
             if resp.status_code == 200:
                 try:
-                    choice = resp.json()["choices"][0]
+                    payload = resp.json()
+                    usage = payload.get("usage", {}) if isinstance(payload, dict) else {}
+                    prompt = usage.get("prompt_tokens") if isinstance(usage, dict) else None
+                    completion = usage.get("completion_tokens") if isinstance(usage, dict) else None
+                    if (
+                        isinstance(prompt, int)
+                        and not isinstance(prompt, bool)
+                        and prompt >= 0
+                        and isinstance(completion, int)
+                        and not isinstance(completion, bool)
+                        and completion >= 0
+                    ):
+                        self.stats["prompt_tokens"] += prompt
+                        self.stats["completion_tokens"] += completion
+                        self.stats["usage_reported"] += 1
+                    else:
+                        self.stats["usage_missing"] += 1
+                    choice = payload["choices"][0]
                     if choice.get("finish_reason") == "content_filter":
                         raise _ContentFiltered
                     message = choice["message"]

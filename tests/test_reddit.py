@@ -34,3 +34,29 @@ def test_token_and_incremental_listing(db, raw, limiter):
     assert s1.fetched == 2 and s2.fetched == 0  # second run stops at the cursor
     assert seen_auth[0] == "bearer tok" and db.get_cursor("reddit", "x") == 200
     assert "Games like Stardew?" in db.conn.execute("SELECT text FROM post").fetchone()["text"]
+
+
+def test_reddit_resumes_pages_and_keeps_timestamp_ties(db, raw, limiter):
+    db.set_cursor("reddit", "x", 100)
+    calls = []
+
+    def handler(req):
+        after = req.url.params.get("after") or None
+        calls.append(after)
+        posts = [_post(3, 200), _post(2, 100)] if after is None else [_post(1, 100), _post(0, 99)]
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "children": [{"data": post} for post in posts],
+                    "after": "next" if after is None else None,
+                }
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert not RedditCrawler(db, raw, limiter, "x", client, "token", max_pages=1).run().complete
+    assert db.get_cursor("reddit", "x") == 100
+    assert RedditCrawler(db, raw, limiter, "x", client, "token", max_pages=1).run().complete
+    assert calls == [None, "next"] and db.get_cursor("reddit", "x") == 200
+    assert db.count("post") == 3

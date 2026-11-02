@@ -22,3 +22,18 @@ def test_forum_crawler_is_incremental(db, raw, limiter, forum_html):
     assert crawler().run().fetched == 1 and db.count("post") == 2
     assert crawler().run().fetched == 0  # nothing newer than cursor
     assert db.count("raw_fetch") == 1
+
+
+def test_forum_sees_changed_page_at_same_timestamp(db, raw, limiter, forum_html):
+    opts = {"start_urls": ["http://f/t"], "selectors": SEL}
+    ForumCrawler(db, raw, limiter, "forum", opts, fetch=lambda _: forum_html).run()
+    # Replace the oldest post with a new ID at the newest post's timestamp.
+    import re
+
+    timestamps = re.findall(r'datetime="([^"]+)"', forum_html)
+    updated = forum_html.replace('data-id="101"', 'data-id="103"').replace(
+        timestamps[0], timestamps[1], 1
+    )
+    stats = ForumCrawler(db, raw, limiter, "forum", opts, fetch=lambda _: updated).run()
+    assert stats.fetched == 1
+    assert db.conn.execute("SELECT 1 FROM post WHERE source_id='103'").fetchone()

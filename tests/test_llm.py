@@ -238,6 +238,16 @@ def test_batch_sends_several_posts_in_one_request_and_caches_each(db):
     assert len(ex(TEXT)) == 1 and len(seen) == 1  # single-post call hits the cache
 
 
+def test_batch_cache_writes_commit_once(db):
+    ex, _ = make(db, lambda req: httpx.Response(200, json=batch_reply({0: [ITEM], 1: [ITEM_B]})))
+    statements = []
+    db.conn.set_trace_callback(statements.append)
+    ex.extract_batch([TEXT, TEXT_B])
+    db.conn.set_trace_callback(None)
+    assert db.count("llm_cache") == 2
+    assert sum(statement == "COMMIT" for statement in statements) == 1
+
+
 def test_batches_respect_batch_size(db):
     calls = []
 
@@ -360,7 +370,13 @@ def test_extract_all_can_send_every_language(db):
     stats = extract_all(db, lambda t: (seen.append(t), [])[1], prefilter="all", english_only=False)
     assert stats["candidates"] == 2 and stats["non_english"] == 0 and len(seen) == 2
     seen.clear()
-    only_en = extract_all(db, lambda t: (seen.append(t), [])[1], prefilter="all")
+
+    def english_extractor(text):
+        seen.append(text)
+        return []
+
+    english_extractor.version = "different-extractor-v1"
+    only_en = extract_all(db, english_extractor, prefilter="all")
     assert only_en["non_english"] == 1 and len(seen) == 1
 
 

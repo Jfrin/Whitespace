@@ -40,10 +40,25 @@ the sidebar, then click **Run full pipeline**. You can also run individual stage
 and view extracted wants. Select **Rules** for offline English extraction without an Azure key;
 posts tagged as other languages are skipped, not deleted.
 
-The **Results** explorer searches all extracted wants and supports combined game, genre, subject,
-request-type, and minimum-confidence filters. Results are paginated, newest first, with source quotes
-and links when available. Confidence is a heuristic, not a probability. Steam user-defined tags are
-not collected yet; the catalog's existing tags are store categories.
+Use **Stop run** to terminate the current stage and skip the remaining stages. Committed work is
+kept and the pipeline can be run again. On upgrade, ingest replays previously stored raw responses
+once to recover any interrupted writes; missing raw files must be restored before it can continue.
+
+The **Results** explorer searches all extracted wants and supports combined game, genre, Steam
+user-defined tag, subject, request-type, and minimum-confidence filters. Sort by newest, helpful, or
+funny; results are paginated with source quotes and links when available. Confidence is a heuristic,
+not a probability. **Steam tags** explicitly fetches user-defined game tags from public store pages;
+the catalog's existing tags are separate store categories. **Review metrics** recovers stored
+review metadata and fetches current snapshots of existing reviews from Steam, up to 20 pages per
+game per run. Rerun to resume partial refreshes. Counts can be missing or stale; helpful and funny
+votes are not review recommendations or niche demand scores.
+The **Games and extraction coverage** table shows posts and extracted items per Steam app, including
+apps with no wants yet. Run **Catalog** to fetch missing game names and genres for configured and
+ingested games. A Steam app ID in the settings or a fetched post does not mean that reviews
+have been extracted. The extraction limit applies **across all games in a run**, not per app; limited
+runs now interleave eligible posts across games. Completed posts are remembered even if they yield
+zero items, so later runs progress to new posts. Re-run Extract to process more (Azure costs may
+apply), then Catalog and Context. These changes do not retroactively add wants for unprocessed posts.
 
 Settings apply to the browser session until you click **Save settings**, which saves Steam IDs in
 `config/sources.yaml` and the remaining settings in `.env`. The Azure key is stored in plaintext;
@@ -68,10 +83,53 @@ docker compose run --rm app stats
 ```
 
 Data lands in `./data/whitespace.sqlite` (raw responses in `./data/raw/`), both gitignored.
+Cleaning builds a persistent near-duplicate index, including a one-time pass over already-cleaned
+posts after upgrading. This needs additional disk space; `clean --refresh` rebuilds the index.
+Duplicates are checked across runs using the same 0.8 Jaccard threshold.
 Steam reviews use the public `IUserReviewsService/GetAppReviews` API; no Steam API key is needed.
 Anonymous calls have a lower rate limit and can return HTTP 429; wait and retry if that happens.
+Steam ingest checkpoints after each complete page. It processes at most 20 pages per game per run
+by default; `complete=False` means to rerun ingest to resume. The cursor advances only when that
+crawl reaches its previous boundary or the API's end. Use `--max-pages N` to change the per-run
+page budget. To recover older reviews missed by previous capped runs, start with
+`docker compose run --rm app ingest steam_reviews --backfill`, then rerun without `--backfill`
+until every game reports `complete=True`. Finish any already-in-progress incremental crawl before
+starting a backfill. A later normal run picks up newer arrivals. Backfills
+cover reviews the source still makes available, not necessarily every historical review; pagination
+also depends on the source's cursor stability. Reddit uses the same checkpointing, subject to its
+listing limits and terms. Steam's default review filter remains negative reviews only.
 If you have `make`, `make build | test | lint | ingest SOURCE=... | extract | stats | dashboard`
 wrap the same commands.
+
+To fetch these optional signals explicitly:
+
+```powershell
+docker compose run --rm app steam-tags               # cache public user-defined store tags
+docker compose run --rm app review-metrics           # recover metrics from stored raw reviews only
+docker compose run --rm app review-metrics --refresh # refresh existing reviews, resumable
+```
+
+`steam-tags --max-age-days 0` refreshes cached tags; `review-metrics --max-pages N` changes the
+per-game refresh page budget. Steam can cache anonymous review responses for up to 10 minutes.
+Existing metrics and tags are retained on errors, and review refreshes do not alter ingest cursors.
+Store pages requiring an age check or login are skipped, not bypassed. HTML layout and source
+availability can change; review Steam's terms and robots.txt before collecting or publishing data.
+These signals are not currently used in clustering or scoring.
+
+### Backup and restore
+
+Stop all pipeline writers before backing up: the SQLite snapshot and raw files cannot otherwise be
+captured as one atomic snapshot. Backups include private raw data; store them securely.
+
+```powershell
+docker compose run --rm app backup /app/data/backups/snapshot-1
+docker compose run --rm app restore /app/data/backups/snapshot-1 /app/data/restored-1
+```
+
+Both destinations must be new directories. Restore checks SQLite integrity and raw-file checksums,
+rewrites raw paths for the destination, and never overwrites an existing directory. Configure
+`WHITESPACE_DATA_DIR` to use the restored directory; do not move it after restoring. Failures can
+leave a partial new destination, which must be inspected before manually removing it.
 
 **`docker compose run` does not rebuild images.** After changing code, rebuild first:
 `docker compose --profile pipeline build app`.
@@ -164,13 +222,33 @@ docker compose run --rm app extract --extractor rules      # offline spaCy fallb
 
 How it behaves:
 
-- **Batching:** by default 8 posts go in one request (`--batch-size`, `AZURE_OPENAI_BATCH_SIZE`; 1 turns it
-  off), so ~1,200 English posts need ~150 requests instead of ~1,200. At the default 10 requests/min
-  that is roughly 15 minutes. Results are cached per post, so batched and single runs share the cache.
-- **Progress:** the run prints the post count up front and a line per batch. Ctrl+C is safe: finished
-  batches are saved and cached responses make the re-run cheap.
+- **Batching:** by default 8 posts go in one request (`--batch-size`, `AZURE_OPENAI_BATCH_SIZE`; 1
+  turns it off). Results are cached per post, so batched and single runs share the cache.
+- **Progress:** the run selects posts incrementally and prints batch progress without loading the
+  entire backlog or calculating a total up front. Ctrl+C is safe: finished batches are saved and
+  cached responses make the re-run cheap. Each completed post is tracked by
+  extractor version even if no want was found; uncached failed responses remain eligible for retry.
 - **Model:** `gpt-4.1-mini` is the default deployment name; override with
-  `AZURE_OPENAI_DEPLOYMENT` or `--model`. Set `AZURE_OPENAI_RPM` (default 10) to match your quota.
+  `AZURE_OPENAI_DEPLOYMENT` or `--model`.
+- **Quotas:** configure `AZURE_OPENAI_RPM` (default 1212) and `AZURE_OPENAI_TPM` (default
+  1212000) in the dashboard or `.env`; CLI flags `--rpm` and `--tpm` override them. These are
+  per-process limits, not a shared quota manager. TPM uses a conservative estimate of request
+  bytes plus maximum output tokens, not Azure's actual calculation or billed usage. Other clients,
+  provider-side windows, and retries can still cause 429s. Set limits to your deployment's quota;
+  higher limits can increase Azure spending. The extractor remains single-request-at-a-time.
+- **Usage and cost:** Azure-reported input/output tokens, missing usage reports, retries, and cache
+  hits are recorded per extraction run. Supply `--input-price` and `--output-price` in USD per
+  million tokens (or `AZURE_OPENAI_INPUT_PRICE_PER_MILLION` and
+  `AZURE_OPENAI_OUTPUT_PRICE_PER_MILLION`) for an estimate covering reported usage only; missing
+  usage, discounts, and other charges make it incomplete. No price is assumed by default. Stage
+  outcomes, timings, and counts are stored in SQLite's `stage_run`; abrupt termination may not be
+  ledgered.
+- **Long posts and comparisons:** `--long-posts` opts into overlapping chunks instead of the default
+  3,000-character truncation and may increase charges. Add `--compare-versions` to process posts
+  already extracted by other versions without deleting their wants. This migrates the want-item
+  uniqueness constraint while preserving IDs; back up first. Results from different versions can
+  include duplicate summaries, so filter by `extractor_version` before aggregating them. Chunk
+  quality and cost on real reviews have not yet been evaluated.
 - **Rate limits:** 429 and server errors are retried; if retries are exhausted the run stops cleanly
   (`stopped: 1`) and can be resumed. Responses are cached per post and deployment in `llm_cache`,
   so cached re-runs do not call the API.
@@ -296,7 +374,8 @@ docker compose run --rm app catalog
 docker compose run --rm app context --refresh    # recompute scope + genres for every row
 ```
 
-`--redo` only deletes `want_item` rows; posts, raw files, and the catalog are untouched.
+`--redo` deletes `want_item` rows and extraction-attempt records; posts, raw files, and the catalog
+are untouched. Cached Azure responses remain available for re-extraction.
 
 ## Context: every want knows what it was said about
 
@@ -318,8 +397,8 @@ built by `cluster/text.py` as `"action, rpg: faster progression system"`, so the
 different genres lands in different niches.
 
 Known limits: Steam genres are coarse. Non-niche ones (Indie, Early Access, Free To Play, content
-flags, non-game software) are filtered out when resolving. Finer user tags would come from a third
-party and are not used.
+flags, non-game software) are filtered out when resolving. Public store-page user-defined tags are
+available in the local explorer but are not yet used for context resolution or clustering.
 The catalog endpoint is throttled by Steam; a 429 stops the run and the next run resumes.
 
 ## Adding a source

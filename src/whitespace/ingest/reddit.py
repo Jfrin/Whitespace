@@ -7,7 +7,7 @@ from collections.abc import Iterator
 
 import httpx
 
-from whitespace.ingest.base import RateLimiter, RawItem, SourceCrawler
+from whitespace.ingest.base import PaginatedCrawler, RateLimiter, RawItem
 from whitespace.models import Post, hash_author
 from whitespace.storage import Database, RawStore
 
@@ -21,7 +21,7 @@ def get_token(client: httpx.Client, client_id: str, secret: str) -> str:
     return r.json()["access_token"]
 
 
-class RedditCrawler(SourceCrawler):
+class RedditCrawler(PaginatedCrawler):
     name = "reddit"
 
     def __init__(
@@ -33,13 +33,16 @@ class RedditCrawler(SourceCrawler):
         client: httpx.Client,
         token: str,
         max_pages: int = 10,
+        backfill: bool = False,
     ) -> None:
-        super().__init__(db, raw, limiter, scope=subreddit)
+        if max_pages < 1:
+            raise ValueError("max_pages must be positive")
+        super().__init__(db, raw, limiter, scope=subreddit, backfill=backfill)
         self.subreddit, self.client = subreddit, client
         self.token, self.max_pages = token, max_pages
 
     def fetch_since(self, cursor: int | None) -> Iterator[RawItem]:
-        after: str | None = None
+        after, cutoff = self.begin_pages(cursor, None)
         for _ in range(self.max_pages):
             self.limiter.wait()
             resp = self.client.get(
@@ -52,8 +55,10 @@ class RedditCrawler(SourceCrawler):
             for child in data["children"]:
                 d = child["data"]
                 ts = int(d["created_utc"])
-                if cursor is not None and ts <= cursor:
+                if cutoff is not None and ts < cutoff:
+                    self._page_complete = True
                     return
+                self._page_newest = max(self._page_newest, ts)
                 yield RawItem(
                     key=d["name"],
                     content=json.dumps(d),
@@ -61,9 +66,14 @@ class RedditCrawler(SourceCrawler):
                     url=f"https://www.reddit.com{d['permalink']}",
                     cursor_value=ts,
                 )
-            after = data.get("after")
-            if not after:
+            next_after = data.get("after")
+            if not next_after:
+                self._page_complete = True
                 return
+            if not isinstance(next_after, str) or next_after == after:
+                raise ValueError("Reddit API returned an invalid or repeated cursor")
+            self.checkpoint_page(next_after)
+            after = next_after
 
     def parse(self, item: RawItem) -> list[Post]:
         d = json.loads(item.content)

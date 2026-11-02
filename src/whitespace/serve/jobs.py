@@ -36,9 +36,11 @@ def commands(stage: str, source: str, extractor: str, limit: int) -> list[list[s
         "extract": ["extract", "--extractor", extractor, "--limit", str(limit)],
         "catalog": ["catalog"],
         "context": ["context"],
+        "steam-tags": ["steam-tags"],
+        "review-metrics": ["review-metrics", "--refresh"],
     }
     if stage == "pipeline":
-        return list(stages.values())
+        return [stages[name] for name in ("ingest", "clean", "extract", "catalog", "context")]
     if stage not in stages:
         raise ValueError("Unknown pipeline stage")
     return [stages[stage]]
@@ -51,13 +53,16 @@ class JobRunner:
         self._lock = threading.Lock()
         self._status = "idle"
         self._lines: list[str] = []
+        self._process: subprocess.Popen | None = None
+        self._stop_requested = False
 
     def start(self, stages: list[list[str]], appids: list[int], env: dict[str, str]) -> bool:
         with self._lock:
-            if self._status == "running":
+            if self._status in {"running", "stopping"}:
                 return False
             self._status = "running"
             self._lines = []
+            self._stop_requested = False
         try:
             threading.Thread(target=self._run, args=(stages, appids, env), daemon=True).start()
         except Exception:
@@ -69,6 +74,20 @@ class JobRunner:
     def snapshot(self) -> tuple[str, str]:
         with self._lock:
             return self._status, "\n".join(self._lines)
+
+    def stop(self) -> bool:
+        """Stop the active stage and prevent any remaining stages from starting."""
+        with self._lock:
+            if self._status != "running":
+                return False
+            self._stop_requested = True
+            self._status = "stopping"
+            if self._process is not None and self._process.poll() is None:
+                try:
+                    self._process.terminate()
+                except ProcessLookupError:
+                    pass  # the stage exited between poll and terminate
+            return True
 
     def _log(self, line: str) -> None:
         with self._lock:
@@ -84,35 +103,54 @@ class JobRunner:
                 config_path = Path(directory) / "sources.yaml"
                 config_path.write_text(yaml.safe_dump(source_config), encoding="utf-8")
                 for stage in stages:
-                    self._log(f"\n> whitespace {' '.join(stage)}")
-                    with subprocess.Popen(
-                        [
-                            sys.executable,
-                            "-u",
-                            "-m",
-                            "whitespace.cli",
-                            "--config",
-                            str(config_path),
-                            *stage,
-                        ],
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        text=True,
-                        encoding="utf-8",
-                        errors="replace",
-                        bufsize=1,
-                        env=env,
-                    ) as process:
-                        assert process.stdout is not None
-                        for line in process.stdout:
-                            self._log(line)
-                        if process.wait() != 0:
-                            self._log(f"Stage {stage[0]} failed; remaining stages were not run.")
-                            status = "failed"
+                    with self._lock:
+                        if self._stop_requested:
+                            status = "stopped"
                             break
+                    self._log(f"\n> whitespace {' '.join(stage)}")
+                    with self._lock:
+                        if self._stop_requested:
+                            status = "stopped"
+                            break
+                        self._process = subprocess.Popen(
+                            [
+                                sys.executable,
+                                "-u",
+                                "-m",
+                                "whitespace.cli",
+                                "--config",
+                                str(config_path),
+                                *stage,
+                            ],
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                            encoding="utf-8",
+                            errors="replace",
+                            bufsize=1,
+                            env=env,
+                        )
+                    try:
+                        with self._process as process:
+                            assert process.stdout is not None
+                            for line in process.stdout:
+                                self._log(line)
+                            exit_code = process.wait()
+                    finally:
+                        with self._lock:
+                            self._process = None
+                    with self._lock:
+                        stopping = self._stop_requested
+                    if stopping:
+                        status = "stopped"
+                        break
+                    if exit_code != 0:
+                        self._log(f"Stage {stage[0]} failed; remaining stages were not run.")
+                        status = "failed"
+                        break
         except Exception as exc:
             self._log(f"Could not run pipeline: {exc}")
             status = "failed"
         finally:
             with self._lock:
-                self._status = status
+                self._status = "stopped" if self._stop_requested else status

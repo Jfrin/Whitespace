@@ -2,8 +2,7 @@
 
 Gives every want a genre context. Results are cached (`max_age_days`) and rate limited. Steam
 throttles this endpoint hard (HTTP 429), so a 429 stops the run and the next run resumes where it
-left off. Genres are coarse (Indie, RPG, Simulation); user-voted tags would be finer-grained but
-come from a third party, so they are not used here.
+left off. User-defined store tags are collected separately by `steam_tags.py`.
 """
 
 from __future__ import annotations
@@ -43,16 +42,22 @@ def parse_appdetails(appid: int, payload: dict) -> CatalogGame | None:
     )
 
 
-def referenced_appids(db: Database) -> list[int]:
-    """Every appid we need genres for: games wants were said about + games they reference."""
+def referenced_appids(db: Database, configured_appids: list[int] | None = None) -> list[int]:
+    """Collect configured, ingested and referenced games, even before wants exist."""
     rows = db.conn.execute(
-        "SELECT DISTINCT p.game_appid FROM post p JOIN want_item w ON w.post_id = p.id "
+        "SELECT DISTINCT p.game_appid FROM post p "
         "WHERE p.game_appid IS NOT NULL "
         "UNION "
         "SELECT DISTINCT CAST(j.value AS INTEGER) FROM want_item w, "
         "json_each(w.referenced_appids) j WHERE CAST(j.value AS INTEGER) > 0"
     ).fetchall()
-    return sorted({r[0] for r in rows})
+    appids = {r[0] for r in rows}
+    appids.update(
+        a
+        for a in configured_appids or []
+        if isinstance(a, int) and not isinstance(a, bool) and a > 0
+    )
+    return sorted(appids)
 
 
 def refresh_catalog(

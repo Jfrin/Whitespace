@@ -72,13 +72,13 @@ class ForumCrawler(SourceCrawler):
             self.limiter.wait()
             html = self.fetch(url)
             posts = parse_posts(html, self.options["selectors"], self.name, url)
-            fresh = [p for p in posts if cursor is None or p.created_at > cursor]
+            fresh = [p for p in posts if cursor is None or p.created_at >= cursor]
             if not fresh:
                 continue
-            # key includes the newest post id so unchanged pages are not re-stored
+            # Include the page contents so another post at the same timestamp isn't missed.
             newest = max(fresh, key=lambda p: p.created_at)
             yield RawItem(
-                key=f"{sha1(url)[:12]}-{newest.source_id}",
+                key=f"{sha1(url)[:12]}-{sha1(html)}",
                 content=html,
                 ext="html",
                 url=url,

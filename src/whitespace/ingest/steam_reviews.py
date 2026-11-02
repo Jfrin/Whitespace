@@ -7,7 +7,8 @@ from collections.abc import Iterator
 
 import httpx
 
-from whitespace.ingest.base import RateLimiter, RawItem, SourceCrawler
+from whitespace.ingest.base import PaginatedCrawler, RateLimiter, RawItem
+from whitespace.ingest.steam_review_fields import review_metrics
 from whitespace.models import Post, hash_author
 from whitespace.storage import Database, RawStore
 
@@ -15,7 +16,7 @@ URL = "https://api.steampowered.com/IUserReviewsService/GetAppReviews/v1/"
 REVIEW_TYPES = {"all": 0, "positive": 1, "negative": 2}
 
 
-class SteamReviewsCrawler(SourceCrawler):
+class SteamReviewsCrawler(PaginatedCrawler):
     name = "steam_reviews"
 
     def __init__(
@@ -27,15 +28,18 @@ class SteamReviewsCrawler(SourceCrawler):
         client: httpx.Client,
         review_type: str = "negative",  # negative reviews are rich in "I wish it had X"
         max_pages: int = 20,
+        backfill: bool = False,
     ) -> None:
-        super().__init__(db, raw, limiter, scope=str(appid))
         self.appid, self.client = appid, client
         if review_type not in REVIEW_TYPES:
             raise ValueError(f"Unknown review type: {review_type!r}")
+        if max_pages < 1:
+            raise ValueError("max_pages must be positive")
+        super().__init__(db, raw, limiter, scope=str(appid), backfill=backfill, variant=review_type)
         self.review_type, self.max_pages = review_type, max_pages
 
     def fetch_since(self, cursor: int | None) -> Iterator[RawItem]:
-        token = "*"
+        token, cutoff = self.begin_pages(cursor, "*")
         for _ in range(self.max_pages):
             self.limiter.wait()
             resp = self.client.get(
@@ -63,11 +67,14 @@ class SteamReviewsCrawler(SourceCrawler):
             if not isinstance(reviews, list):
                 raise ValueError("Steam reviews API returned invalid reviews")
             if not reviews:
+                self._page_complete = True
                 return
             for rev in reviews:
                 ts = int(rev["timestamp_created"])
-                if cursor is not None and ts <= cursor:
+                if cutoff is not None and ts < cutoff:
+                    self._page_complete = True
                     return  # `recent` is newest-first, so everything after is old
+                self._page_newest = max(self._page_newest, ts)
                 rev["_appid"] = self.appid
                 yield RawItem(
                     key=f"{self.appid}-{rev['recommendationid']}",
@@ -76,9 +83,14 @@ class SteamReviewsCrawler(SourceCrawler):
                     url=f"https://steamcommunity.com/app/{self.appid}/reviews/",
                     cursor_value=ts,
                 )
-            token = data.get("cursor")
-            if not token:
+            next_token = data.get("cursor")
+            if not next_token:
+                self._page_complete = True
                 return
+            if not isinstance(next_token, str) or next_token == token:
+                raise ValueError("Steam reviews API returned an invalid or repeated cursor")
+            self.checkpoint_page(next_token)
+            token = next_token
 
     def parse(self, item: RawItem) -> list[Post]:
         rev = json.loads(item.content)
@@ -95,10 +107,6 @@ class SteamReviewsCrawler(SourceCrawler):
                 author_hash=hash_author(str(rev.get("author", {}).get("steamid"))),
                 lang=rev.get("language"),
                 game_appid=int(rev["_appid"]),
-                meta={
-                    "voted_up": rev.get("voted_up"),
-                    "votes_up": rev.get("votes_up"),
-                    "playtime_forever": rev.get("author", {}).get("playtime_forever"),
-                },
+                meta=review_metrics(rev),
             )
         ]
