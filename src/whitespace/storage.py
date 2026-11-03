@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS want_item (
 );
 CREATE TABLE IF NOT EXISTS extraction_attempt (
   post_id INTEGER NOT NULL REFERENCES post(id), extractor_version TEXT NOT NULL,
+  outcome TEXT NOT NULL DEFAULT 'unknown',
   PRIMARY KEY (post_id, extractor_version)
 );
 CREATE TABLE IF NOT EXISTS clean_fingerprint (
@@ -107,6 +108,7 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     ("raw_fetch", "cursor_value", "INTEGER"),
     ("raw_fetch", "processed_at", "TEXT"),
     ("raw_fetch", "pending_content", "BLOB"),
+    ("extraction_attempt", "outcome", "TEXT NOT NULL DEFAULT 'unknown'"),
     ("want_item", "referenced_games", "TEXT"),
     ("want_item", "context_appid", "INTEGER"),
     ("want_item", "context_genres", "TEXT"),

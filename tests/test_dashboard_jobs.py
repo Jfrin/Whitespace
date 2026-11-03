@@ -28,6 +28,13 @@ def test_pipeline_commands_and_validation():
         commands("unknown", "steam_reviews", "azure", 20)
 
 
+def test_comparison_uses_english_posts_and_processes_empty_results():
+    azure = commands("extract", "steam_reviews", "azure", 20, compare_versions=True)[0]
+    rules = commands("extract", "steam_reviews", "rules", 20, compare_versions=True)[0]
+    assert azure[-5:] == ["--compare-versions", "--prefilter", "all", "--languages", "english"]
+    assert rules[-3:] == ["--compare-versions", "--prefilter", "all"]
+
+
 def test_job_uses_temporary_config_and_stops_after_failure(monkeypatch):
     calls = []
 

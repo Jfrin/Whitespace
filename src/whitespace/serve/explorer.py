@@ -20,6 +20,7 @@ class Filters:
     min_confidence: float = 0.0
     user_tags: list[str] = field(default_factory=list)
     sort_by: str = "newest"
+    extractor_versions: list[str] = field(default_factory=list)
 
 
 FROM = (
@@ -126,6 +127,7 @@ def options(conn: sqlite3.Connection) -> dict:
         "user_tags": sorted(user_tags, key=str.casefold),
         "subjects": distinct("subject"),
         "request_types": distinct("request_type"),
+        "extractor_versions": distinct("extractor_version"),
     }
 
 
@@ -166,6 +168,7 @@ def _where(filters: Filters) -> tuple[str, list]:
         ("COALESCE(w.context_appid, p.game_appid)", filters.games),
         ("w.subject", filters.subjects),
         ("w.request_type", filters.request_types),
+        ("w.extractor_version", filters.extractor_versions),
     ):
         if values:
             clauses.append(f"{column} IN ({','.join('?' for _ in values)})")

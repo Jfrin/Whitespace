@@ -10,6 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from whitespace.config import Settings, load_sources
+from whitespace.extract.compare import compare_versions as compare_extractor_results
 from whitespace.extract.quota import DEFAULT_RPM, DEFAULT_TPM
 from whitespace.serve.explorer import (
     Filters,
@@ -82,6 +83,11 @@ with st.sidebar:
         min_value=1,
         value=number_default("WHITESPACE_UI_LIMIT", 100),
         step=50,
+    )
+    compare_versions = st.checkbox(
+        "Compare extractor versions",
+        help="Keep prior results and process English posts, including empty outputs."
+        " Azure requests may incur charges; filter by version to avoid double-counting.",
     )
     if extractor == "azure":
         endpoint = st.text_input("Azure endpoint", value=default("AZURE_OPENAI_ENDPOINT"))
@@ -166,7 +172,9 @@ def start_job(stage: str) -> None:
                     "AZURE_OPENAI_BATCH_SIZE": str(batch),
                 }
             )
-        if job.start(commands(stage, "steam_reviews", extractor, int(limit)), appids, env):
+        if job.start(
+            commands(stage, "steam_reviews", extractor, int(limit), compare_versions), appids, env
+        ):
             st.rerun()
         st.warning("Another job is already running.")
     except ValueError as exc:
@@ -248,6 +256,53 @@ try:
         )
         choices = options(db.conn)
         total = count(db.conn, Filters())
+        attempt_versions = [
+            row[0]
+            for row in db.conn.execute(
+                "SELECT extractor_version FROM extraction_attempt "
+                "WHERE extractor_version IS NOT NULL AND extractor_version != '' "
+                "UNION SELECT extractor_version FROM want_item "
+                "WHERE extractor_version IS NOT NULL AND extractor_version != '' "
+                "ORDER BY extractor_version"
+            )
+        ]
+        with st.expander("Compare extractor results"):
+            st.caption(
+                "Compares completed attempts on the same posts, including empty results. "
+                "Some legacy outcomes are inferred from the current cache; "
+                "unknown and content-filtered attempts are reported separately."
+            )
+            if len(attempt_versions) < 2:
+                st.info("Run two extractor versions with comparison enabled first.")
+            else:
+                left_version = st.selectbox("First extractor", attempt_versions, index=0)
+                right_version = st.selectbox("Second extractor", attempt_versions, index=1)
+                if left_version == right_version:
+                    st.warning("Choose two different versions.")
+                elif st.button("Compare completed posts"):
+                    report = compare_extractor_results(
+                        db,
+                        left_version,
+                        right_version,
+                        examples=5,
+                        endpoint=default("AZURE_OPENAI_ENDPOINT") or None,
+                    )
+                    comparison = report["completed_detection"]
+                    columns = st.columns(4)
+                    for col, title, key in zip(
+                        columns,
+                        ["Both", "First only", "Second only", "Neither"],
+                        ["both", "left_only", "right_only", "neither"],
+                        strict=True,
+                    ):
+                        col.metric(title, comparison[key])
+                    st.caption(
+                        f"{comparison['total']} shared completed posts; agreement is not accuracy."
+                    )
+                    st.write("Shared attempts by outcome", report["shared_by_outcome"])
+                    st.write("Attempt coverage and inferred legacy outcomes", report["versions"])
+                    if report["mismatch_examples"]:
+                        st.json(report["mismatch_examples"])
         if not total:
             st.info("No wants yet. Run the pipeline or start with Ingest, Clean, and Extract.")
         else:
@@ -261,12 +316,13 @@ try:
             user_tags = right.multiselect("Steam user-defined tags", choices["user_tags"])
             subjects = left.multiselect("Subject", choices["subjects"])
             types = right.multiselect("Request type", choices["request_types"])
+            versions = left.multiselect("Extractor version", choices["extractor_versions"])
             order = st.selectbox("Sort results", ["Newest", "Most helpful", "Most funny"])
             confidence = st.slider("Minimum confidence", 0.0, 1.0, 0.0, 0.1)
             st.caption("User-defined tags describe the reviewed game, not individual requests.")
             sort_by = {"Newest": "newest", "Most helpful": "helpful", "Most funny": "funny"}[order]
             filters = Filters(
-                games, genres, subjects, types, search, confidence, user_tags, sort_by
+                games, genres, subjects, types, search, confidence, user_tags, sort_by, versions
             )
             matches = count(db.conn, filters)
             st.caption(f"{matches:,} matching extracted items out of {total:,} total")

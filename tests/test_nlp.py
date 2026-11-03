@@ -299,3 +299,118 @@ def test_synthetic_english_gold_post_detection(extract):
     assert result["labeled"] == 20 and result["unlabeled"] == 0
     assert result["true_positive"] == 12 and result["true_negative"] == 8
     assert result["precision"] == 1.0 and result["recall"] == 1.0
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "If this game had no checkpoints, I would quit.",
+        "Unless the game has no checkpoints, I will continue playing.",
+        "There isn't any lack of checkpoints.",
+        "I don't think it lacks checkpoints.",
+        "I wish I hadn't bought this game with co-op.",
+        "I wish I had never bought this game with co-op.",
+        "I wish I’d never bought this game with co-op.",
+        "I doubt that it lacks checkpoints.",
+        "I want a more enjoyable game.",
+        "I wish it didn't have no checkpoints.",
+        "I wish the game lacked no checkpoints.",
+    ],
+)
+def test_ambiguous_negations_and_nondesign_feedback_do_not_invent_wants(extract, text):
+    assert extract(text) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "I wish this game weren't missing checkpoints.",
+        "I wish it didn't lack checkpoints.",
+    ],
+)
+def test_wishing_away_absence_does_not_reverse_polarity(extract, text):
+    items = extract(text)
+    assert items and all("without" not in item.want_summary for item in items)
+    assert any("checkpoint" in item.want_summary for item in items)
+
+
+def test_if_only_negated_feature_keeps_negative_polarity(extract):
+    assert any(
+        "without timer" in item.want_summary
+        for item in extract("If only the game didn't have a timer.")
+    )
+
+
+@pytest.mark.parametrize(
+    "text", ["I wish it never had checkpoints.", "I wish the game lacked checkpoints."]
+)
+def test_wishes_for_absence_keep_negative_polarity(extract, text):
+    assert any("without checkpoint" in item.want_summary for item in extract(text))
+
+
+def test_fewer_does_not_gain_a_second_polarity_word(extract):
+    assert any(
+        item.want_summary == "fewer checkpoint"
+        for item in extract("I wish the game had fewer checkpoints.")
+    )
+
+
+def test_real_complaint_after_negated_absence_is_preserved(extract):
+    items = extract("The game is not missing a map, but it has no checkpoints.")
+    assert {item.want_summary for item in items} == {"checkpoints"}
+
+
+@pytest.mark.parametrize("connector", ["but", "and"])
+def test_shared_subject_contrast_keeps_real_complaint(extract, connector):
+    text = f"The game does not lack co-op {connector} lacks checkpoints."
+    assert {item.want_summary for item in extract(text)} == {"checkpoints"}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[h1]I wish[/h1] it had [b]co-op[/b] and a map.",
+        "I wish it wasn’t a roguelite.\n  There are no checkpoints.",
+        "I cant skip the dialogue, and I wish it had co op.",
+    ],
+)
+def test_quotes_are_exact_original_substrings_after_normalization(extract, text):
+    items = extract(text)
+    assert items
+    assert all(item.quote and item.quote in text and len(item.quote) <= 200 for item in items)
+
+
+def test_quotes_keep_original_curly_apostrophes_and_spacing(extract):
+    text = "I wish it wasn’t a roguelite.\n\nI wish it had co-op."
+    items = extract(text)
+    assert {item.quote for item in items} == {
+        "I wish it wasn’t a roguelite.",
+        "I wish it had co-op.",
+    }
+
+
+def test_quote_keeps_internal_markup_and_multiple_spaces(extract):
+    text = "I wish it had  [b]co-op[/b]."
+    items = extract(text)
+    assert items and items[0].quote == text
+
+
+def test_reviews_beyond_4000_characters_are_processed_with_original_quotes(extract):
+    text = ("This is a plain review sentence. " * 180) + "[b]I wish it had co-op.[/b]"
+    items = extract(text)
+    assert any("co-op" in item.want_summary for item in items)
+    assert all(item.quote in text for item in items)
+
+
+def test_long_single_sentence_crossing_a_chunk_boundary_is_processed(extract):
+    text = ("ordinary " * 443) + "I wish it had co-op and a map."
+    items = extract(text)
+    assert any("co-op" in item.want_summary for item in items)
+    assert all(item.quote in text and len(item.quote) <= 200 for item in items)
+
+
+def test_long_clause_quote_is_anchored_near_the_complaint(extract):
+    text = "This game " + ("really " * 35) + "has no checkpoints."
+    items = extract(text)
+    assert any("checkpoints" in item.want_summary and "checkpoints" in item.quote for item in items)
+    assert all(item.quote in text and len(item.quote) <= 200 for item in items)

@@ -275,12 +275,29 @@ How it behaves:
 - **What it sends:** only public review text, no usernames. Review your Azure deployment's data
   handling and pricing before sending data.
 - **Comparing extractors:** every want records `extractor_version` (e.g. `azure-v3:gpt-4.1-mini`
-  or `rules-v3`). `gold-export` includes the column and `gold-score` reports `by_extractor`, so label
-  a sample from each and compare precision directly.
+  or `rules-v4`). Use `--compare-versions --prefilter all` for each extractor and restrict Azure to
+  English for a shared comparison with the English-only rules. Then run:
+
+  ```powershell
+  docker compose run --rm app compare-extractors --left rules-v4 --right azure-v3:gpt-4.1-mini
+  ```
+
+  The report compares posts completed by both versions, including empty outputs; it separates
+  content-filtered and legacy `unknown` attempts rather than treating them as true negatives. Where
+  possible, legacy Azure outcomes are inferred from the current endpoint's cache and old rules
+  outcomes from their versions; inferences are reported separately and are not saved. Missing or
+  changed caches remain unknown. The dashboard's comparison option
+  preserves both versions and its extractor-version filter helps avoid duplicate counts. Agreement
+  is not precision or recall; evaluate a labeled sample. Azure runs may incur charges.
 
 ## Rules extractor (offline fallback)
 
 `whitespace extract --extractor rules` turns a post into structured wants in deterministic steps:
+
+The rules extractor processes long reviews in bounded windows and maps each quote back to a literal
+slice of the original text, retaining punctuation, whitespace, and markup. Very long individual
+sentences may still lose context at window boundaries. `rules-v4` adds targeted negation and
+hypothetical safeguards; its quality has not been established on human-labeled real reviews.
 
 1. **Prefilter** (`prefilter.py`): regex triggers ("I wish", "kill for", "games like", ...).
 2. **Dependency parse + markers** (`nlp.py`): spaCy finds the wanted noun, then `with X` /

@@ -148,10 +148,11 @@ def test_batch_validation_and_cache(db):
     assert len(ex(TEXT)) == 1 and len(calls) == 1
 
 
-def test_invalid_json_is_retried_on_the_next_extract_run(db):
+@pytest.mark.parametrize("bad", ["oops", "{}", '{"items": "invalid"}'])
+def test_invalid_json_is_retried_on_the_next_extract_run(db, bad):
     db.upsert_post(Post("s", "1", "u", TEXT, 1))
     db.set_flags(1, "en", {"is_dup": False, "is_low_effort": False})
-    answers = iter(["oops", json.dumps({"items": []})])
+    answers = iter([bad, json.dumps({"items": []})])
 
     def handler(req):
         return httpx.Response(
@@ -164,6 +165,21 @@ def test_invalid_json_is_retried_on_the_next_extract_run(db):
     assert db.count("extraction_attempt") == 0
     assert extract_all(db, ex, prefilter="all")["candidates"] == 1
     assert db.count("extraction_attempt") == 1
+
+
+def test_malformed_cached_result_is_replaced_only_after_success(db):
+    calls = []
+
+    def handler(req):
+        calls.append(req)
+        return response({"items": [ITEM]})
+
+    ex = make(db, handler)
+    db.llm_cache_put(ex._key(TEXT), ex.model, "{}")
+    assert ex.cache_outcome(TEXT) is None
+    assert ex(TEXT)[0].want_summary == "minimap"
+    assert ex.cache_outcome(TEXT) == "completed"
+    assert ex(TEXT)[0].want_summary == "minimap" and len(calls) == 1
 
 
 def test_rate_limit_retries_using_azure_header(db):
@@ -287,6 +303,15 @@ def test_content_filtered_single_post_is_skipped_and_cached(db, error):
     assert ex(TEXT) == [] and ex(TEXT) == []
     assert len(calls) == 1 and ex.stats["filtered_posts"] == 1
     assert json.loads(db.llm_cache_get(ex._key(TEXT)))["filtered"] is True
+    assert ex.cache_outcome(TEXT) == "filtered"
+
+
+def test_filtered_attempt_is_not_counted_as_a_completed_empty_result(db):
+    db.upsert_post(Post("s", "1", "u", TEXT, 1))
+    db.set_flags(1, "en", {"is_dup": False, "is_low_effort": False})
+    ex = make(db, lambda req: httpx.Response(400, json={"error": {"code": "content_filter"}}))
+    assert extract_all(db, ex, prefilter="all")["candidates"] == 1
+    assert db.conn.execute("SELECT outcome FROM extraction_attempt").fetchone()[0] == "filtered"
 
 
 def test_filtered_batch_recovers_other_posts_and_extraction_continues(db):

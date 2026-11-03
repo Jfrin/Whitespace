@@ -53,6 +53,31 @@ def cmd_bench_sqlite(args: argparse.Namespace, settings: Settings) -> int:
     return 0
 
 
+def cmd_compare_extractors(args: argparse.Namespace, settings: Settings) -> int:
+    from whitespace.extract.compare import compare_versions
+
+    db = Database(settings.db_path)
+    try:
+        print(
+            json.dumps(
+                compare_versions(
+                    db,
+                    args.left,
+                    args.right,
+                    args.examples,
+                    endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT"),
+                ),
+                indent=2,
+            )
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    finally:
+        db.conn.close()
+    return 0
+
+
 def cmd_ingest(args: argparse.Namespace, settings: Settings) -> int:
     sources = load_sources(args.config)
     cfg = sources.get(args.source)
@@ -475,6 +500,11 @@ def main(argv: list[str] | None = None) -> int:
     bench.add_argument("--rows", type=int, default=10_000)
     bench.add_argument("--selection", type=int, default=1000)
     bench.set_defaults(fn=cmd_bench_sqlite)
+    compare = sub.add_parser("compare-extractors", help="compare existing completed versions")
+    compare.add_argument("--left", required=True, help="first extractor version")
+    compare.add_argument("--right", required=True, help="second extractor version")
+    compare.add_argument("--examples", type=int, default=10, help="maximum disagreement examples")
+    compare.set_defaults(fn=cmd_compare_extractors)
     ing = sub.add_parser("ingest", help="pull new items from one source")
     ing.add_argument("source")
     ing.add_argument("--backfill", action="store_true", help="scan historical pages")

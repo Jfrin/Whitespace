@@ -1,3 +1,5 @@
+import random
+
 import pytest
 
 from whitespace.extract import rules
@@ -227,3 +229,31 @@ def test_strip_markup_keeps_words_as_written():
         "I wish it had co-op please"
     )
     assert rules.strip_markup(None) == ""
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "  [h1]I wish[/h1] it had [b]co-op[/b]\nplease!  ",
+        "I cant use co op because it isn’t enabled.",
+        "[url=https://example.com]Can’t[/url]   use a map.",
+        "",
+    ],
+)
+def test_normalization_offsets_match_existing_normalization(text):
+    normalized, offsets = rules.normalize_with_offsets(text)
+    assert normalized == rules.normalize_text(text)
+    assert len(normalized) == len(offsets)
+    assert all(0 <= start < end <= len(text) for start, end in offsets)
+    assert all(a[0] <= b[0] and a[1] <= b[1] for a, b in zip(offsets, offsets[1:], strict=False))
+
+
+def test_normalization_offsets_match_across_mixed_markup_and_whitespace():
+    rng = random.Random(2026)
+    parts = ["co-op", "cant", "doesnt", "[b]", "[/b]", "\n", "  ", "I", "’", "map", "."]
+    for _ in range(100):
+        text = "".join(rng.choices(parts, k=30))
+        normalized, offsets = rules.normalize_with_offsets(text)
+        assert normalized == rules.normalize_text(text)
+        assert len(normalized) == len(offsets)
+        assert all(0 <= start < end <= len(text) for start, end in offsets)

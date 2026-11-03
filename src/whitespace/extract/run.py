@@ -163,12 +163,21 @@ def extract_all(
                             ),
                         )
                         stats["items"] += 1
+                    outcome_check = getattr(extractor, "cache_outcome", None)
                     cache_check = getattr(extractor, "is_cached", None)
-                    if not cache_check or cache_check(row["text"] or ""):
+                    outcome = (
+                        outcome_check(row["text"] or "")
+                        if outcome_check
+                        else "completed"
+                        if not cache_check or cache_check(row["text"] or "")
+                        else None
+                    )
+                    if outcome:
                         db.conn.execute(
-                            "INSERT OR IGNORE INTO extraction_attempt(post_id, extractor_version) "
-                            "VALUES (?, ?)",
-                            (row["id"], version),
+                            "INSERT OR IGNORE INTO extraction_attempt"
+                            "(post_id, extractor_version, outcome) "
+                            "VALUES (?, ?, ?)",
+                            (row["id"], version, outcome),
                         )
             if stats["candidates"] // 10 != before // 10 or len(group) > 1:
                 print(f"  {stats['candidates']} posts, {stats['items']} items", file=sys.stderr)

@@ -181,12 +181,17 @@ reviews API exposes helpful and funny votes and a separate weighted helpfulness 
 - [x] Small labeled synthetic English regression set; it is not a real-world quality estimate
 - [ ] Label a representative real English post sample and measure post-level precision and recall;
       separately label extracted items to assess item-level precision and partial misses
-- [ ] Improve more complex negation, ambiguous hypothetical clauses, and vague non-design feedback
-- [ ] Preserve exact original source quotes even when the rules extractor normalizes punctuation,
+- [x] `rules-v4`: improve selected negation, hypothetical-clause, and vague non-design cases
+- [ ] Validate remaining negation, hypothetical and vague-feedback cases on human-labeled real reviews
+- [x] Preserve exact original source quotes even when the rules extractor normalizes punctuation,
       whitespace, or markup
-- [ ] Process long reviews beyond the current 4,000-character rules-extraction limit
-- [ ] Compare Azure and offline rules on the same posts without deleting existing wants; track
-      processing by extractor and version, including posts that produced no items
+- [x] Process long reviews using bounded parse windows; extra-long individual sentences can still
+      lose context at window boundaries
+- [x] Compare Azure and offline rules on shared posts without deleting existing wants; track
+      completed, filtered and legacy-unknown attempts per version, including empty results
+- [ ] Independently label a representative sample before interpreting comparison results as quality
+      measurements. A preliminary AI-labeled comparison of 29 English reviews is saved in
+      `data/evaluation_2026-11-02/rules_v4_with_gazetteer_comparison.json`; it is not human ground truth.
 
 ### Rules quality history
 

@@ -207,20 +207,52 @@ def canonical_features(text: str) -> list[str]:
 
 # Steam review markup: [h1], [/b], [url=...], [spoiler], [*] ...
 BBCODE = re.compile(r"\[/?[a-z0-9*]+(?:=[^\]]*)?\]", re.I)
+_MISSING_APOSTROPHE = re.compile(
+    r"\b(can|don|doesn|didn|won|isn|wasn|couldn|wouldn|shouldn|haven|hasn|aren|weren)t\b",
+    re.I,
+)
+_COOP = re.compile(r"\bco[- ]?op\b", re.I)
+_WHITESPACE = re.compile(r"\s+")
 
 
 def normalize_text(text: str) -> str:
     """Pre-parse cleanup: stops the tokenizer splitting 'co-op' into three tokens."""
     text = text.replace("\u2019", "'").replace("\u2018", "'")
     text = BBCODE.sub(" ", text)
-    text = re.sub(
-        r"\b(can|don|doesn|didn|won|isn|wasn|couldn|wouldn|shouldn|haven|hasn|aren|weren)t\b",
-        r"\1't",
-        text,
-        flags=re.I,
-    )
-    text = re.sub(r"\bco[- ]?op\b", "coop", text, flags=re.I)
-    return re.sub(r"\s+", " ", text).strip()
+    text = _MISSING_APOSTROPHE.sub(r"\1't", text)
+    text = _COOP.sub("coop", text)
+    return _WHITESPACE.sub(" ", text).strip()
+
+
+def normalize_with_offsets(text: str) -> tuple[str, list[tuple[int, int]]]:
+    """Normalize for parsing while mapping each output character to its original source span."""
+    offsets = [(i, i + 1) for i in range(len(text))]
+    normalized = text.replace("\u2019", "'").replace("\u2018", "'")
+
+    def replace(pattern, replacement):
+        nonlocal normalized, offsets
+        parts = []
+        mapped = []
+        pos = 0
+        for match in pattern.finditer(normalized):
+            parts.append(normalized[pos : match.start()])
+            mapped.extend(offsets[pos : match.start()])
+            value = match.expand(replacement)
+            parts.append(value)
+            origin = (offsets[match.start()][0], offsets[match.end() - 1][1])
+            mapped.extend([origin] * len(value))
+            pos = match.end()
+        parts.append(normalized[pos:])
+        mapped.extend(offsets[pos:])
+        normalized, offsets = "".join(parts), mapped
+
+    replace(BBCODE, " ")
+    replace(_MISSING_APOSTROPHE, r"\1't")
+    replace(_COOP, "coop")
+    replace(_WHITESPACE, " ")
+    start = len(normalized) - len(normalized.lstrip())
+    end = len(normalized.rstrip())
+    return normalized[start:end], offsets[start:end]
 
 
 # --- phrase cleanup ----------------------------------------------------------------------
@@ -401,8 +433,9 @@ def is_english(lang: str | None) -> bool:
 
 
 NEGATED_WISH = re.compile(
-    r"\bwish\b[^.!?]{0,40}?\b(wasn'?t|weren'?t|isn'?t|didn'?t|hadn'?t|wouldn'?t|did not|was not"
-    r"|were not|had no)\b",
+    r"\b(?:wish|if only)\b[^.!?]{0,40}?\b(wasn'?t|weren'?t|isn'?t|didn'?t|hadn'?t|wouldn'?t"
+    r"|did not|was not"
+    r"|were not|had no|never had|never has|never included)\b",
     re.I,
 )
 
@@ -410,6 +443,90 @@ NEGATED_WISH = re.compile(
 def is_negated_wish(text: str) -> bool:
     """'I wish this wasn't a roguelite': the thing named is what they do NOT want."""
     return bool(NEGATED_WISH.search(text))
+
+
+_NEGATED_ABSENCE = re.compile(
+    r"(?:\bnot\b|\bnever\b|\bno\b|n['’]t\b)\s+(?:\w+\s+){0,3}"
+    r"(?:lack(?:s|ed|ing)?|missing|shortage|absence)\b",
+    re.I,
+)
+_NEGATED_BELIEF = re.compile(
+    r"(?:(?:\bnot\b|\bnever\b|n['’]t\b)\s+(?:think|believe|feel|sure)|\bdoubt)\b"
+    r"[^.!?;]{0,80}\b(?:lack(?:s|ed|ing)?|missing|no|shortage|absence)\b",
+    re.I,
+)
+_SELF_REGRET = re.compile(
+    r"\b(?:i|we)\s+wish\s+(?:i|we)(?:['’]d)?\s+"
+    r"(?:(?:had(?:n['’]t| not| never)?|did(?:n['’]t| not)|"
+    r"would(?:n['’]t| not)|never)\s+|['’]d\s+)?(?:bought|buy|purchased|purchase|"
+    r"refunded|refund|waited|wait|listened|listen)\b",
+    re.I,
+)
+_DOUBLE_NEGATED_HAVE = re.compile(
+    r"(?:\bnot\b|n['’]t\b)\s+(?:have|include|contain|offer)\s+(?:any\s+)?no\b"
+    r"|\black(?:s|ed|ing)?\s+no\b",
+    re.I,
+)
+_VAGUE_GAME_MODIFIERS = {
+    "a",
+    "an",
+    "the",
+    "game",
+    "games",
+    "fun",
+    "more",
+    "less",
+    "good",
+    "better",
+    "best",
+    "great",
+    "nice",
+    "new",
+    "enjoyable",
+    "interesting",
+    "engaging",
+    "amazing",
+    "awesome",
+    "perfect",
+    "decent",
+    "greatest",
+    "gooder",
+    "bad",
+    "different",
+    "quality",
+}
+
+
+def negated_absence(text: str) -> bool:
+    return bool(_NEGATED_ABSENCE.search(text) or _NEGATED_BELIEF.search(text))
+
+
+def self_regret(text: str) -> bool:
+    return bool(_SELF_REGRET.search(text))
+
+
+def double_negated_have(text: str) -> bool:
+    return bool(_DOUBLE_NEGATED_HAVE.search(text))
+
+
+def wished_absence(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(?:wish|if only)\b[^.!?;]{0,60}\b(?:lack(?:s|ed|ing)?|missing)\b",
+            text,
+            re.I,
+        )
+    ) and not negated_absence(text)
+
+
+def vague_game_target(phrase: str) -> bool:
+    words = set(re.findall(r"[a-z]+", phrase.lower()))
+    return bool(words & {"game", "games"}) and words <= _VAGUE_GAME_MODIFIERS
+
+
+def conditional_without_wish(text: str) -> bool:
+    """Do not assert a hypothetical if/unless clause as a real absence."""
+    return bool(re.match(r"\s*(?:even\s+)?(?:if|unless)\b(?!\s+only\b)", text, re.I))
 
 
 QUANTITY_NOUNS = {"kind", "sort", "type", "bit", "lot", "couple", "piece", "variety"}

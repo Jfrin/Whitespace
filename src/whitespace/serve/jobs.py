@@ -26,7 +26,9 @@ def parse_appids(value: str) -> list[int]:
     return ids
 
 
-def commands(stage: str, source: str, extractor: str, limit: int) -> list[list[str]]:
+def commands(
+    stage: str, source: str, extractor: str, limit: int, compare_versions: bool = False
+) -> list[list[str]]:
     """Build CLI arguments from the dashboard's supported options."""
     if source != "steam_reviews" or extractor not in {"azure", "rules"} or limit < 1:
         raise ValueError("Invalid pipeline options")
@@ -39,6 +41,10 @@ def commands(stage: str, source: str, extractor: str, limit: int) -> list[list[s
         "steam-tags": ["steam-tags"],
         "review-metrics": ["review-metrics", "--refresh"],
     }
+    if compare_versions:
+        stages["extract"] += ["--compare-versions", "--prefilter", "all"]
+        if extractor == "azure":
+            stages["extract"] += ["--languages", "english"]
     if stage == "pipeline":
         return [stages[name] for name in ("ingest", "clean", "extract", "catalog", "context")]
     if stage not in stages:

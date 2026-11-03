@@ -78,6 +78,46 @@ def test_missing_metadata_and_invalid_pages(db):
         page(db.conn, Filters(), 1, 101)
 
 
+def test_extractor_version_filter_prevents_mixed_version_counts(db):
+    db.upsert_post(Post("s", "1", "", "text", 1))
+    db.enable_versioned_wants()
+    db.conn.executemany(
+        "INSERT INTO want_item(post_id,want_summary,extractor_version) VALUES (1,'map',?)",
+        [("rules-v4",), ("azure-v3:test",)],
+    )
+    db.conn.commit()
+    assert options(db.conn)["extractor_versions"] == ["azure-v3:test", "rules-v4"]
+    assert count(db.conn, Filters()) == 2
+    assert count(db.conn, Filters(extractor_versions=["rules-v4"])) == 1
+
+
+def test_dashboard_comparison_displays_shared_completed_posts(monkeypatch, tmp_path):
+    pytest.importorskip("streamlit")
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.setenv("WHITESPACE_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("WHITESPACE_UI_ENV_PATH", str(tmp_path / "missing.env"))
+    db = Database(tmp_path / "whitespace.sqlite")
+    db.upsert_post(Post("s", "1", "", "text", 1))
+    db.enable_versioned_wants()
+    db.conn.executemany(
+        "INSERT INTO extraction_attempt(post_id, extractor_version, outcome) VALUES (1,?,?)",
+        [("rules-v4", "completed"), ("azure-v3:test", "completed")],
+    )
+    db.conn.executemany(
+        "INSERT INTO want_item(post_id,want_summary,extractor_version) VALUES (1,'map',?)",
+        [("rules-v4",), ("azure-v3:test",)],
+    )
+    db.conn.commit()
+    db.conn.close()
+    app = AppTest.from_file(Path("src/whitespace/serve/app.py").resolve(), default_timeout=20).run()
+    assert not app.exception
+    next(button for button in app.button if button.label == "Compare completed posts").click().run()
+    assert not app.exception
+    assert any(metric.label == "Both" and metric.value == "1" for metric in app.metric)
+    assert any(element.label == "Extractor version" for element in app.multiselect)
+
+
 def test_coverage_shows_posts_without_wants_and_configured_games_without_posts(db):
     db.upsert_post(Post("steam_reviews", "1", "", "first", 1, game_appid=413150))
     db.upsert_post(Post("steam_reviews", "2", "", "second", 2, game_appid=1145360))

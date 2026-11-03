@@ -7,16 +7,19 @@ no) and clean phrases by dropping filler, instead of trusting exact dependency l
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from whitespace.extract import rules
 from whitespace.extract.appid import AppIndex
-from whitespace.extract.prefilter import find_trigger, has_lack_cue
+from whitespace.extract.prefilter import LACK_PATTERN, find_trigger, has_lack_cue
 from whitespace.extract.schema import WantItem
 
-EXTRACTOR_VERSION = "rules-v3"
+EXTRACTOR_VERSION = "rules-v4"
 MODEL = "en_core_web_sm"
+MAX_PARSE_CHARS = 4000
+CHUNK_OVERLAP = 300
 PEOPLE = {
     "friend",
     "partner",
@@ -171,7 +174,7 @@ def _with_less(sent, tok) -> str:
     """'less confusing mechanics' keeps its 'less': the want is the opposite of the phrase."""
     phrase = _phrase(tok)
     lo = max(sent.start, tok.i - 4)
-    if not phrase.startswith("less ") and any(
+    if not phrase.startswith(("less ", "fewer ")) and any(
         t.lower_ in rules.LESS_WORDS for t in sent.doc[lo : tok.i]
     ):
         return f"less {phrase}"
@@ -319,6 +322,16 @@ def _independent_clauses(sent):
             if verb.head.i < tok.i
         ):
             boundaries.append(tok.i)
+        elif (
+            not preceding_wish
+            and rules.negated_absence(sent.doc[sent.start : tok.i].text)
+            and any(
+                verb.dep_ == "conj" and verb.pos_ in {"VERB", "AUX"} and verb.head.i < tok.i
+                for verb in later
+            )
+        ):
+            # A shared subject can govern a negated absence and a separate real complaint.
+            boundaries.append(tok.i)
     start = sent.start
     for boundary in boundaries:
         if start < boundary:
@@ -326,6 +339,77 @@ def _independent_clauses(sent):
         start = boundary + 1
     if start < sent.end:
         yield sent.doc[start : sent.end]
+
+
+def _parse_chunks(text: str):
+    """Yield bounded parse windows, overlapping only when a sentence exceeds the limit."""
+    start = 0
+    while start < len(text):
+        end = min(start + MAX_PARSE_CHARS, len(text))
+        if end == len(text):
+            yield start, text[start:end]
+            return
+        boundary = None
+        for match in re.finditer(r"[.!?](?=\s)", text[start:end]):
+            if match.end() >= MAX_PARSE_CHARS // 2:
+                boundary = start + match.end()
+        if boundary is not None:
+            yield start, text[start:boundary]
+            start = boundary
+            continue
+        split = text.rfind(" ", start + MAX_PARSE_CHARS // 2, end)
+        end = split if split > start else end
+        yield start, text[start:end]
+        # A long, unpunctuated sentence needs context on both sides of the split.
+        resume = max(start + 1, end - CHUNK_OVERLAP)
+        space = text.rfind(" ", start + 1, resume)
+        start = space + 1 if space >= start + 1 else resume
+
+
+def _source_quote(
+    text: str,
+    normalized_text: str,
+    offsets: list[tuple[int, int]],
+    start: int,
+    end: int,
+    summary: str,
+) -> str:
+    """Return a literal source slice, anchored near the requested feature for long clauses."""
+    original_start, original_end = offsets[start][0], offsets[end - 1][1]
+    if original_end - original_start <= 200:
+        return text[original_start:original_end]
+    normalized = rules.normalize_text(summary).lower()
+    terms = [
+        t
+        for t in re.findall(r"[\w-]+", normalized)
+        if t
+        not in {
+            "with",
+            "without",
+            "like",
+            "more",
+            "less",
+            "game",
+            "games",
+            "a",
+            "the",
+        }
+    ]
+    anchor = original_start
+    found = -1
+    if terms:
+        found = normalized_text[start:end].lower().rfind(terms[-1])
+        if found >= 0:
+            anchor = offsets[start + found][0]
+    if found < 0:
+        clause = normalized_text[start:end]
+        trigger = find_trigger(clause)
+        lack = LACK_PATTERN.search(clause)
+        cue = trigger if trigger is not None else lack.start() if lack else None
+        if cue is not None:
+            anchor = offsets[start + cue][0]
+    quote_start = min(max(original_start, anchor - 70), max(original_start, original_end - 200))
+    return text[quote_start : min(original_end, quote_start + 200)]
 
 
 class RuleExtractor:
@@ -340,20 +424,31 @@ class RuleExtractor:
         self.sentiment = sentiment or build_sentiment()
 
     def __call__(self, text: str) -> list[WantItem]:
-        doc = self.nlp(rules.normalize_text(text)[:4000])
+        text = text or ""
+        normalized, offsets = rules.normalize_with_offsets(text)
         out: list[WantItem] = []
         seen: set[str] = set()
-        for sent in doc.sents:
-            for clause in _independent_clauses(sent):
-                for item in self._sentence(clause) or self._complaints(clause):
-                    if item.want_summary not in seen:
-                        seen.add(item.want_summary)
-                        out.append(item)
+        for chunk_start, chunk in _parse_chunks(normalized):
+            doc = self.nlp(chunk)
+            for sent in doc.sents:
+                for clause in _independent_clauses(sent):
+                    for item in self._sentence(clause) or self._complaints(clause):
+                        if item.want_summary not in seen:
+                            seen.add(item.want_summary)
+                            quote = _source_quote(
+                                text,
+                                normalized,
+                                offsets,
+                                chunk_start + clause.start_char,
+                                chunk_start + clause.end_char,
+                                item.want_summary,
+                            )
+                            out.append(replace(item, quote=quote))
         return out
 
     def _sentence(self, sent) -> list[WantItem]:
         trig = find_trigger(sent.text)
-        if trig is None:
+        if trig is None or rules.self_regret(sent.text) or rules.double_negated_have(sent.text):
             return []
         trig_tok = next((t.i for t in sent if t.idx - sent.start_char >= trig), sent.start)
         games = [e for e in sent.ents if e.label_ == "GAME"]
@@ -394,6 +489,8 @@ class RuleExtractor:
                 feats.append(_Feature("with", name))
         if base in rules.GENERIC_TARGETS and not feats and like_obj is None:
             return []  # "I want to play this game" says nothing about a niche
+        if rules.vague_game_target(base) and not feats and like_obj is None:
+            return []
         if not base and not feats and like_obj is None:
             return []
 
@@ -423,7 +520,20 @@ class RuleExtractor:
             if not feats:
                 return []
             req = "genre_request"
-        negated = bool(base) and not is_like and rules.is_negated_wish(sent.text)
+        negated = (
+            bool(base)
+            and not is_like
+            and (rules.is_negated_wish(sent.text) or rules.wished_absence(sent.text))
+            and not rules.negated_absence(sent.text)
+        )
+        if (
+            base
+            and rules.negated_absence(sent.text)
+            and re.search(r"\b(?:wish|if only)\b", sent.text, re.I)
+        ):
+            req = "feature_wish"
+        elif base and rules.wished_absence(sent.text) and not is_like:
+            req = "feature_wish"
         ref = f"like {', '.join(names)}" if is_like and names else base
         stem = ref or base
 
@@ -477,7 +587,13 @@ class RuleExtractor:
     def _complaints(self, sent) -> list[WantItem]:
         """Implicit demand: what players say the game lacks. One item per missing thing, in
         positive form ("no fast restarts" -> "fast restart"), so it clusters with the wishes."""
-        if not has_lack_cue(sent.text):
+        if (
+            not has_lack_cue(sent.text)
+            or rules.negated_absence(sent.text)
+            or rules.conditional_without_wish(sent.text)
+            or rules.self_regret(sent.text)
+            or rules.double_negated_have(sent.text)
+        ):
             return []
         phrases = [
             *_lacks_no(sent),

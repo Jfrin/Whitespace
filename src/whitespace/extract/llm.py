@@ -127,6 +127,20 @@ def quote_in_text(quote: str, text: str) -> bool:
     return bool(q) and q in _norm(text)
 
 
+def _cached_payload(raw: str | None) -> object | None:
+    if raw is None:
+        return None
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return None
+    if isinstance(payload, list) or (
+        isinstance(payload, dict) and isinstance(payload.get("items"), list)
+    ):
+        return payload
+    return None
+
+
 class LLMExtractor:
     """Shared extraction workflow; subclasses implement provider requests and cache keys."""
 
@@ -173,26 +187,39 @@ class LLMExtractor:
             return []
         key = self._key(cleaned)
         raw = self.db.llm_cache_get(key)
-        if raw is None:
+        payload = _cached_payload(raw)
+        if payload is None:
             raw = self._generate(self._body(cleaned))
-            try:
-                json.loads(raw)
-            except ValueError:
+            payload = _cached_payload(raw)
+            if payload is None:
                 self.stats["bad_json"] += 1  # not cached, so a later run retries it
                 return []
             self.db.llm_cache_put(key, self.model, raw)
             self.stats["calls"] += 1
         else:
             self.stats["cache_hits"] += 1
-        return self._items(json.loads(raw), cleaned)
+        return self._items(payload, cleaned)
 
     def is_cached(self, text: str) -> bool:
         """An empty result is complete only if its response was cached successfully."""
+        return self.cache_outcome(text) is not None
+
+    def cache_outcome(self, text: str) -> str | None:
+        """Distinguish a valid empty result from an Azure content-filtered response."""
         cleaned = rules.strip_markup(text)
         chunks = post_chunks(cleaned) if self.long_posts else [cleaned[:MAX_CHARS]]
-        return all(
-            not chunk or self.db.llm_cache_get(self._key(chunk)) is not None for chunk in chunks
-        )
+        filtered = False
+        for chunk in chunks:
+            if not chunk:
+                continue
+            raw = self.db.llm_cache_get(self._key(chunk))
+            if raw is None:
+                return None
+            payload = _cached_payload(raw)
+            if payload is None:
+                return None
+            filtered = filtered or (isinstance(payload, dict) and payload.get("filtered") is True)
+        return "filtered" if filtered else "completed"
 
     # ----------------------------------------------------------------- internals
     def _key(self, cleaned: str) -> str:
@@ -245,11 +272,12 @@ class LLMExtractor:
                 results[i] = []
                 continue
             raw = self.db.llm_cache_get(self._key(c))
-            if raw is None:
+            payload = _cached_payload(raw)
+            if payload is None:
                 todo.append(i)
             else:
                 self.stats["cache_hits"] += 1
-                results[i] = self._items(json.loads(raw), c)
+                results[i] = self._items(payload, c)
         for chunk in self._chunks(todo, cleaned):
             self._run_chunk(chunk, cleaned, results)
         return [r if r is not None else [] for r in results]
